@@ -91,7 +91,6 @@ Output `rows.json` — a list of:
 
 ```json
 {
-  "tcg_id": 276329,
   "product_id": 276329,
   "set_name_en": "Double Masters 2022",
   "name_en": "Imperial Seal (Borderless)",

@@ -104,6 +104,14 @@ re-runnable.
   set code, Jihuanshe CNY market price (when present), reference image URI.
 - Produce **both** price suggestions for every card in `price.py` (USD-derived
   and Jihuanshe-derived). The UI displays both and lets the user pick.
+- Every pipeline stage lands with a corresponding test file under
+  `tests/test_<stage>.py` in the same commit as the implementation.
+  Never commit a stage without its tests.
+- Parse-stage validation is fail-fast: any field that downstream
+  stages need as a non-null key (collector number, set name,
+  condition, finish) must raise ValueError with a row reference.
+  Fields that downstream stages can handle as null (price, optional
+  descriptive fields) pass through with a log line.
 
 ## Never
 

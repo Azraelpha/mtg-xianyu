@@ -23,5 +23,8 @@ mtg-match    = "mtg_xianyu.match:main"
 mtg-price    = "mtg_xianyu.price:main"
 mtg-describe = "mtg_xianyu.describe:main"
 
+[dependency-groups]
+dev = ["pytest>=8.0"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/mtg_xianyu"]
