@@ -8,7 +8,7 @@ See `@./SPEC.md` for the full design.
 
 ## Status
 
-v0 — scaffolding only. Nothing implemented yet.
+v0.1 — parse.py complete (12 tests passing); enrich.py next.
 
 ## Stack
 
@@ -38,9 +38,11 @@ sbwsz subsumes everything we'd need from those.
 ## Dev-time MCP
 
 The community `sbwsz-mcp-server` (npm: `sbwsz-mcp-server`, GitHub:
-`lieyanqzu/sbwsz-mcp`) is installable in Claude Code's `claude_desktop_config.json`
-for interactive sbwsz lookups while developing. It is **not** used at pipeline
-runtime — runtime calls the HTTP API directly from Python. See SPEC §8.
+`lieyanqzu/sbwsz-mcp`) is installable in Claude Code via `claude mcp add` or
+by adding an `mcpServers` block to `~/.claude.json` (user-level) or
+`.claude/settings.json` (project-level) for interactive sbwsz lookups while
+developing. It is **not** used at pipeline runtime — runtime calls the HTTP API
+directly from Python. See SPEC §8.
 
 ## Project layout
 
@@ -58,7 +60,10 @@ runtime — runtime calls the HTTP API directly from Python. See SPEC §8.
 │   └── ui.py          # Streamlit review/edit interface
 ├── data/
 │   ├── mtg_photos/    # user photos in HEIC (gitignored)
-│   ├── cache/         # sbwsz responses cached locally (gitignored)
+│   ├── cache/
+│   │   └── sbwsz/
+│   │       ├── cards/     # per-card responses, keyed by set/number (gitignored)
+│   │       └── sets.json  # set list with fetched_at timestamp (gitignored)
 │   └── (collection file also gitignored)
 └── tests/
 ```
@@ -112,6 +117,15 @@ re-runnable.
   condition, finish) must raise ValueError with a row reference.
   Fields that downstream stages can handle as null (price, optional
   descriptive fields) pass through with a log line.
+- Cache keys are derived from the full request URL including query
+  string. Two URLs with the same path but different query parameters
+  are different cache entries.
+- Stages must remain re-runnable from disk state. Each stage reads
+  its input file and writes its output file; no in-memory state passes
+  between stages.
+- After Claude Code completes a multi-part task, verify each item
+  against the original prompt before approving. Coding agents are
+  lossy on tail items.
 
 ## Never
 
@@ -146,6 +160,9 @@ re-runnable.
   `pillow-heif` as a Pillow opener at the start of any module that opens a
   photo. Vision-API calls and final listing exports must convert HEIC → JPEG
   in memory; do not assume `.jpg` files exist on disk by default.
+- **sbwsz's `/api/v1/card/` endpoint returns a lean response by default;
+  only `?view=1` includes `prices.cny` and the `versions` array. Always
+  include `?view=1` on card requests.**
 
 ## Commands
 
@@ -162,9 +179,6 @@ uv run streamlit run src/mtg_xianyu/ui.py
 
 ## Open decisions
 
-- Inter-stage file format: JSON (default) or CSV.
-- License — unset.
-- Repo name — unset.
 - Calibration of USD and Jihuanshe price multipliers (tune empirically after
   selling the first batch).
 - Whether v3 attempts Playwright-driven Xianyu publish (account risk).

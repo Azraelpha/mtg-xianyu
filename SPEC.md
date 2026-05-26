@@ -63,16 +63,24 @@ it will be the norm.
 
 ### 3.2 sbwsz operational notes
 
-- Public HTTP API. A docs page exists at `https://new.sbwsz.com/api/v1/docs`
-  but is robots-blocked from automated fetchers; we'll discover the schema by
-  inspecting actual responses when we wire up `enrich.py`.
-- The site's `robots.txt` actively discourages crawling. Query specific cards,
-  never enumerate.
+- Public HTTP API at `https://mtgch.com/api/v1/` (canonical base).
+  `new.sbwsz.com` is an alias serving the same API; use `mtgch.com` in all
+  runtime code to avoid the 301 redirect hop. A docs page exists at the old
+  domain but is robots-blocked; discover the schema from live responses.
+- **sbwsz broadly discourages automated access.** `robots.txt` covers the full
+  site. Always identify the tool via `User-Agent`; query specific cards only;
+  never enumerate sets or search results. The API is a community courtesy.
 - Community-maintained by a small team. Treat as a soft dependency: plan for
   occasional downtime; cache aggressively so the pipeline can re-run offline
   against cached data.
 - Rate limit ourselves to ≥100 ms between requests. Send a descriptive
   `User-Agent` identifying the tool and contact info.
+- **Query parameters materially change the response shape.** The same path
+  with different query strings returns structurally different JSON (e.g.
+  `prices.cny` and the `versions` array are absent on the bare card endpoint
+  but present with `?view=1`). Always record the **full URL including query
+  string** as the cache key. Never assume two URLs with the same path return
+  equivalent data.
 
 ## 4. Pipeline
 
@@ -105,45 +113,93 @@ Output `rows.json` — a list of:
 
 ### 4.2 Enrich — `enrich.py`
 
-**Bootstrap.** Call sbwsz `get_sets` once. From the response build two
-in-memory dicts:
+**API base URL.** `https://mtgch.com/api/v1/` is the canonical base.
+`new.sbwsz.com` is an alias that 301-redirects to `mtgch.com`; all runtime
+code uses `mtgch.com` directly to avoid the redirect hop.
+
+**Bootstrap.** `GET /api/v1/sets/` returns a JSON array of set objects. From it
+build two in-memory dicts:
 
 ```
-en_to_code  : { "Double Masters 2022": "2x2", ... }
-code_to_zh  : { "2x2": "双重大师2022", ... }
+en_to_code  : { entry["name"]: entry["code"]            for entry in sets_data }
+code_to_zh  : { entry["code"]: entry["translated_name"] for entry in sets_data }
 ```
 
-Persist the full `get_sets` response to `data/cache/sbwsz/sets.json` with a
-timestamp; refresh weekly.
+Relevant fields per set entry:
 
-**Per row.** Resolve `set_code = en_to_code[row.set_name_en]`, then call
-`get_card_by_set_and_number(set_code, row.collector_number)`. Persist the
-response to `data/cache/sbwsz/cards/{set_code}/{number}.json`.
+| API field | Type | Notes |
+|---|---|---|
+| `code` | str | Uppercase set code, e.g. `"2X2"` |
+| `name` | str | English set name used as lookup key |
+| `translated_name` | str \| null | Simplified Chinese name; null for sets with no Chinese edition |
+
+Persist the full response to `data/cache/sbwsz/sets.json` wrapped in
+`{"fetched_at": <unix_ts>, "data": [...]}`. Refresh if the timestamp is older
+than 7 days.
+
+**Per row.** `GET /api/v1/card/{set_code}/{collector_number}/?view=1`. The
+`?view=1` parameter is **required** — the bare endpoint omits `prices.cny` and
+the `versions` array entirely. Persist the response to
+`data/cache/sbwsz/cards/{set_code}/{number}.json` keyed on the full URL
+including query string (no TTL — card data is immutable).
+
+Relevant fields per card entry and how they map to our canonical shape:
+
+| API field | Our field | Precedence / notes |
+|---|---|---|
+| `atomic_official_name` | `name_zh` (primary) | Wizards-blessed official Simplified Chinese name |
+| `atomic_translated_name` | `name_zh` (fallback) | Community translation; used only when `atomic_official_name` is null |
+| — | `name_zh = null` | Valid output if both are null (post-Bloomburrow, no translation yet). **Never invent.** |
+| `set_translated_name` | `set_name_zh` | Chinese name for the set as returned per-card; may differ slightly from `code_to_zh` for the same code |
+| `image_uris.normal` | `sbwsz_image_uri` | English-print reference image. We use `image_uris` (not `zhs_image_uris`) because user cards are English prints; `match.py`'s phash comparison needs the reference to match the physical card being photographed |
+| `prices.usd` | — | Not stored in `enriched.json`; TCGPlayer's `usd_market` is authoritative for USD |
+| `prices.usd_foil` | — | Same — not stored |
+| `prices.cny` | `jihuanshe_price_cny` | De-facto Jihuanshe / 集换社 market price; sbwsz uses the generic key `cny`. Optional — absent, null, or `""` when no trading history for this printing. |
+
+**Jihuanshe prices.** `prices.cny` is the de-facto Jihuanshe / 集换社 market
+price for the requested printing. sbwsz names the key generically (`cny`) rather
+than `jihuanshe`; it is the number Jihuanshe shows as the market price.
+
+The field is **optional**. Printings without Jihuanshe trading history will have
+`prices.cny` absent from the dict, present as JSON null, or present as an empty
+string `""`. `_jihuanshe_price(card)` has a strict boundary contract:
+**`float | None` out — never a string, never `""`, never `0.0` as an absent
+sentinel.** This mirrors `_collector_number`'s contract in `parse.py`: raw API
+types go in, clean Python types come out.
+
+```python
+raw = card.get("prices", {}).get("cny")
+if raw is None or raw == "":
+    return None
+return float(raw)   # "17.27" → 17.27
+```
 
 Output `enriched.json` adds, per row:
 
 ```json
 {
-  "name_zh": "御用密令",
-  "set_code": "2x2",
-  "set_name_zh": "双重大师2022",
-  "sbwsz_image_uri": "https://sbwsz.com/images/...",
-  "jihuanshe_price_cny": 1208.40
+  "name_zh": "真伪莫辨",
+  "set_code": "SLD",
+  "set_name_zh": "秘室珍品",
+  "sbwsz_image_uri": "https://images.mtgch.com/sf/normal/front/…/….webp",
+  "jihuanshe_price_cny": 17.27
 }
 ```
 
-If sbwsz returns no `name_zh` (rare for pre-Bloomburrow; expected for
-post-Bloomburrow sets without a community translation yet), the field is
-`null` — **do not invent.** The UI surfaces these gaps for manual entry.
+`jihuanshe_price_cny` is `null` when `prices.cny` is absent, null, or `""` —
+`price.py` handles this gracefully (Jihuanshe column greyed out in UI, USD
+column remains pickable).
 
-If sbwsz returns no Jihuanshe price (out of stock, never traded, sbwsz hasn't
-integrated that printing yet), `jihuanshe_price_cny` is `null` — `price.py`
-handles the fallback.
+`name_zh` is `null` when both `atomic_official_name` and
+`atomic_translated_name` are absent — **do not invent.** The UI surfaces these
+gaps for manual entry.
 
 **Fuzzy fallback.** TCGPlayer's `Set Name` strings occasionally don't exactly
-match sbwsz's English names (e.g. "Commander: Modern Horizons 3" vs sbwsz's
+match sbwsz's English names (e.g. `"Commander: Modern Horizons 3"` vs sbwsz's
 form). When the exact `en_to_code` lookup misses, fall back to a fuzzy match
-against the `en_to_code` keys; log every fuzzy match for user review.
+(rapidfuzz WRatio, cutoff 80) against `en_to_code` keys; log every fuzzy match
+to stderr for user review. If neither exact nor fuzzy resolves, raise
+`ValueError` with the row reference — the failure is unrecoverable downstream.
 
 ### 4.3 Match — `match.py`
 
@@ -191,7 +247,8 @@ hold_out_usd   =  usd_market × fx_rate × 1.00
 
 `fx_rate` defaults to 7.2 (configurable). The 0.55 / 1.00 multipliers are
 tunable defaults intended to be calibrated empirically after the first
-batch sells.
+batch sells. All multipliers and `fx_rate` are configurable in a top-level
+project config (location TBD).
 
 **Source B — Jihuanshe** (when `jihuanshe_price_cny` is present):
 
@@ -203,6 +260,10 @@ hold_out_jhs   =  jihuanshe_price_cny × 0.90
 The discount applied vs. Jihuanshe reflects Xianyu's nature: lower trust,
 less infrastructure, more competition. Xianyu sellers typically undercut
 Jihuanshe; Jihuanshe is the more "authoritative" Chinese reference price.
+
+**Note on data availability.** sbwsz's Jihuanshe feed is intermittent; some
+enrichment runs will produce mostly-null `jihuanshe_price_cny`. `price.py`
+and the UI must degrade to USD-only gracefully when this field is null.
 
 **Why both, why let the user pick.** The two sources can disagree
 significantly. The USD-derived figure reflects what global collectors think
@@ -237,7 +298,15 @@ LLM-generated**, for predictability and zero per-card cost.
   variant + finish marker, e.g. `御用密令 异画 普通 双重大师2022`.
 - **Description body**: bilingual block listing condition, finish, set
   (Chinese + English + code), collector number, English name. Closes with a
-  sbwsz data attribution line.
+  sbwsz data attribution line. Example (SLD/1995, Fact or Fiction, NM, Normal):
+
+  ```
+  中文名：真伪莫辨 / Fact or Fiction
+  系列：秘室珍品 / Secret Lair Drop (SLD) · #1995
+  品相：近况完好 · Near Mint
+  版本：普通 · Normal
+  数据参考：mtgch.com (大学院废墟)
+  ```
 
 ### 4.6 Review UI — `ui.py`
 
@@ -318,9 +387,6 @@ useful signal.
 
 ## 7. Open questions
 
-- Inter-stage file format: JSON (default) or CSV?
-- License — unset.
-- Repo name — unset.
 - Calibration of the USD and Jihuanshe price multipliers — to be tuned
   empirically by observing which suggestion the user most often accepts
   during the first dozen sales.
@@ -329,6 +395,8 @@ useful signal.
   LLM translation? Leaning null + UI prompt for v1.
 - For `scan.py` (§4.7): OCR engine choice (Tesseract / cloud OCR /
   vision-LLM all-in-one). Decide when v2 starts.
+- How sparse is `jihuanshe_price_cny` in practice on the current collection?
+  Answer empirically after the first enrich run.
 
 ## 8. The sbwsz MCP server (dev-time only)
 
@@ -352,3 +420,11 @@ Useful for **dev-time interactive lookups** when working on the project with
 Claude Code — "look up 御用密令 and tell me which variants exist," etc. It is
 **not** used at pipeline runtime; `enrich.py` calls the HTTP API directly
 via `httpx`, no Node or MCP runtime needed.
+
+## 9. Testing
+
+Each stage has a corresponding `tests/test_<stage>.py`. Tests use synthetic
+in-memory inputs constructed in the test file itself — never read from `data/`,
+never make real network calls. HTTP-calling stages use `httpx.MockTransport` to
+stub upstream responses with pre-canned (status, body) tuples. The test suite
+must pass cleanly (`uv run pytest -v`) before any stage is considered shippable.
