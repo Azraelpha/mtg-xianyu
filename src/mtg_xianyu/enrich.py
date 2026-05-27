@@ -20,7 +20,7 @@ from rapidfuzz import fuzz, process
 BASE_URL = "https://mtgch.com/api/v1"
 USER_AGENT = "mtg-xianyu/0.1 (https://github.com/Azraelpha/mtg-xianyu)"
 SETS_TTL = 7 * 24 * 3600   # seconds before the set list is re-fetched
-RATE_DELAY = 0.1            # minimum seconds between live requests
+RATE_DELAY = 0.5            # minimum seconds between live requests
 
 _last_request_at: float = 0.0
 
@@ -50,13 +50,18 @@ def _write_cache(path: Path, data: dict | list) -> None:
 
 # ── HTTP ──────────────────────────────────────────────────────────────────────
 
-def _fetch(client: httpx.Client, url: str) -> dict | list:
+def _fetch(client: httpx.Client, url: str, *, _retries: int = 3) -> dict | list:
     global _last_request_at
     elapsed = time.monotonic() - _last_request_at
     if _last_request_at > 0 and elapsed < RATE_DELAY:
         time.sleep(RATE_DELAY - elapsed)
     _last_request_at = time.monotonic()
     r = client.get(url)
+    if r.status_code == 429 and _retries > 0:
+        wait = float(r.headers.get("Retry-After", 10))
+        print(f"\n[429] rate limited; waiting {wait:.0f}s …", file=sys.stderr)
+        time.sleep(wait)
+        return _fetch(client, url, _retries=_retries - 1)
     r.raise_for_status()
     return r.json()
 
@@ -80,7 +85,13 @@ def _get_card(client: httpx.Client, set_code: str, number: str) -> dict:
     cached = _read_cache(path)
     if cached is not None:
         return cached
-    data = _fetch(client, url)
+    try:
+        data = _fetch(client, url)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            print(f"[404] {set_code}/{number} not in sbwsz — enrichment fields will be null", file=sys.stderr)
+            return {}
+        raise
     _write_cache(path, data)
     return data
 
@@ -118,17 +129,16 @@ def _resolve_set_code(
 # ── field extraction ──────────────────────────────────────────────────────────
 
 def _name_zh(card: dict) -> str | None:
-    name = card.get("atomic_official_name")
-    if name:
-        return name
-    translated = card.get("atomic_translated_name")
-    if translated:
+    name = card.get("primary_name")
+    if not name:
+        return None
+    name_source = (card.get("translation_info") or {}).get("name_source", "")
+    if name_source and name_source != "官方中文":
         print(
-            f"[name_zh] community translation used: {translated!r} for {card.get('name')!r}",
+            f"[name_zh] community translation used: {name!r} (source: {name_source!r})",
             file=sys.stderr,
         )
-        return translated
-    return None
+    return name
 
 
 def _jihuanshe_price(card: dict) -> float | None:
@@ -151,17 +161,28 @@ def _enrich_row(
     fuzzy_log: list | None = None,
 ) -> dict:
     ref = f"source row {idx} ({row.get('name_en', '?')!r})"
-    set_code = _resolve_set_code(row["set_name_en"], en_to_code, ref, fuzzy_log)
+    try:
+        set_code = _resolve_set_code(row["set_name_en"], en_to_code, ref, fuzzy_log)
+    except ValueError:
+        print(f"[no-set] {row['set_name_en']!r} not in sbwsz — enrichment fields will be null", file=sys.stderr)
+        if stats is not None:
+            stats["no_set"] += 1
+            stats["jhs_null"] += 1
+        return {**row, "name_zh": None, "set_code": None, "set_name_zh": None,
+                "sbwsz_image_uri": None, "jihuanshe_price_cny": None}
+
     card = _get_card(client, set_code, row["collector_number"])
 
     jhs = _jihuanshe_price(card)
-    official = card.get("atomic_official_name")
-    translated = card.get("atomic_translated_name")
+    name_source = (card.get("translation_info") or {}).get("name_source", "")
+    has_name = bool(card.get("primary_name"))
 
     if stats is not None:
-        if official:
+        if not card:
+            stats["not_found"] += 1
+        elif has_name and name_source == "官方中文":
             stats["official"] += 1
-        elif translated:
+        elif has_name:
             stats["community"] += 1
         else:
             stats["null_name"] += 1
@@ -170,12 +191,15 @@ def _enrich_row(
         else:
             stats["jhs_null"] += 1
 
+    face = (card.get("faces") or [{}])[0]
+    image_uri = (face.get("zhs_image_uris") or face.get("image_uris") or {}).get("normal")
+
     return {
         **row,
         "name_zh": _name_zh(card),
         "set_code": set_code,
         "set_name_zh": code_to_zh.get(set_code),
-        "sbwsz_image_uri": (card.get("image_uris") or {}).get("normal"),
+        "sbwsz_image_uri": image_uri,
         "jihuanshe_price_cny": jhs,
     }
 
@@ -195,7 +219,7 @@ def main() -> None:
     en_to_code, code_to_zh = _build_set_dicts(_get_sets(client))
 
     stats: dict[str, int] = {
-        "official": 0, "community": 0, "null_name": 0,
+        "official": 0, "community": 0, "null_name": 0, "not_found": 0, "no_set": 0,
         "jhs_populated": 0, "jhs_null": 0,
     }
     fuzzy_log: list[tuple[str, str, float]] = []
@@ -215,9 +239,11 @@ def main() -> None:
     print(f"wrote {total} rows → {out}")
 
     print(f"\nname_zh outcomes ({total} rows):")
-    print(f"  official (atomic_official_name):    {stats['official']:>4}")
-    print(f"  community (atomic_translated_name): {stats['community']:>4}")
-    print(f"  null (no Chinese name):             {stats['null_name']:>4}")
+    print(f"  official (primary_name, 官方中文):  {stats['official']:>4}")
+    print(f"  community (primary_name, other src):{stats['community']:>4}")
+    print(f"  null (primary_name absent):         {stats['null_name']:>4}")
+    print(f"  not found in sbwsz (404):           {stats['not_found']:>4}")
+    print(f"  set not in sbwsz:                   {stats['no_set']:>4}")
 
     print(f"\njihuanshe_price_cny coverage:")
     print(f"  populated:  {stats['jhs_populated']:>4}")

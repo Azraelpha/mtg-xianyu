@@ -22,10 +22,14 @@ SETS_DATA = [
 
 def _card(**overrides) -> dict:
     base = {
-        "name": "Lightning Bolt",
-        "atomic_official_name": "闪电击",
-        "atomic_translated_name": None,
-        "image_uris": {"normal": "https://example.com/img.jpg"},
+        "primary_name": "闪电击",
+        "translation_info": {"name_source": "官方中文"},
+        "faces": [
+            {
+                "image_uris": {"normal": "https://example.com/img.jpg"},
+                "zhs_image_uris": {"normal": "https://example.com/zhs.jpg"},
+            }
+        ],
         "prices": {"cny": "12.50"},
     }
     return {**base, **overrides}
@@ -109,19 +113,19 @@ def test_unknown_set_raises():
 
 # ── name_zh extraction ─────────────────────────────────────────────────────────
 
-def test_name_zh_prefers_official():
-    card = _card(atomic_official_name="闪电击", atomic_translated_name="社区翻译")
+def test_name_zh_official():
+    card = _card(primary_name="闪电击", translation_info={"name_source": "官方中文"})
     assert _name_zh(card) == "闪电击"
 
 
 def test_name_zh_community_fallback(capsys):
-    card = _card(atomic_official_name=None, atomic_translated_name="社区翻译")
-    assert _name_zh(card) == "社区翻译"
+    card = _card(primary_name="苍茂谷唤洪师", translation_info={"name_source": "MTGso"})
+    assert _name_zh(card) == "苍茂谷唤洪师"
     assert "[name_zh]" in capsys.readouterr().err
 
 
 def test_null_name_zh():
-    card = _card(atomic_official_name=None, atomic_translated_name=None)
+    card = _card(primary_name=None, translation_info=None)
     assert _name_zh(card) is None
 
 
@@ -141,6 +145,25 @@ def test_jihuanshe_price_null_value():
 
 def test_jihuanshe_price_empty_string():
     assert _jihuanshe_price(_card(prices={"cny": ""})) is None
+
+
+# ── 404 handling ──────────────────────────────────────────────────────────────
+
+def test_404_returns_null_enrichment(capsys):
+    routes = {"https://mtgch.com/api/v1/card/MH3/146/?view=1": _card()}
+    transport = _MockTransport(routes)
+    transport._routes = {}  # empty — every request 404s via AssertionError... use a real 404
+
+    class _404Transport(httpx.BaseTransport):
+        def handle_request(self, request: httpx.Request) -> httpx.Response:
+            return httpx.Response(404)
+
+    client = httpx.Client(transport=_404Transport(), headers={"User-Agent": "test"})
+    en_to_code, code_to_zh = _build_set_dicts(SETS_DATA)
+    result = _enrich_row(0, _row(), en_to_code, code_to_zh, client)
+    assert result["name_zh"] is None
+    assert result["jihuanshe_price_cny"] is None
+    assert "[404]" in capsys.readouterr().err
 
 
 # ── network / cache behaviour ──────────────────────────────────────────────────
