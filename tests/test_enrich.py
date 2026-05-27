@@ -17,6 +17,8 @@ from mtg_xianyu.enrich import (
 SETS_DATA = [
     {"code": "MH3", "name": "Modern Horizons 3", "translated_name": "现代地平线3"},
     {"code": "SLD", "name": "Secret Lair Drop", "translated_name": "秘密巢穴"},
+    {"code": "M3C", "name": "Modern Horizons 3 Commander", "translated_name": "摩登新篇3统帅"},
+    {"code": "FIN", "name": "Final Fantasy", "translated_name": "最终幻想"},
 ]
 
 
@@ -94,21 +96,45 @@ def _reset_rate_limiter():
 # ── set resolution ─────────────────────────────────────────────────────────────
 
 def test_exact_set_match():
-    en_to_code, _ = _build_set_dicts(SETS_DATA)
+    en_to_code, _, code_to_name = _build_set_dicts(SETS_DATA)
     assert _resolve_set_code("Modern Horizons 3", en_to_code, "test") == "MH3"
 
 
 def test_fuzzy_set_match(capsys):
-    en_to_code, _ = _build_set_dicts(SETS_DATA)
+    en_to_code, _, code_to_name = _build_set_dicts(SETS_DATA)
     code = _resolve_set_code("Modern Horizons III", en_to_code, "test")
     assert code == "MH3"
     assert "[fuzzy]" in capsys.readouterr().err
 
 
 def test_unknown_set_raises():
-    en_to_code, _ = _build_set_dicts(SETS_DATA)
+    en_to_code, _, code_to_name = _build_set_dicts(SETS_DATA)
     with pytest.raises(ValueError, match="no set_code"):
         _resolve_set_code("Completely Unknown Set XYZ 9999", en_to_code, "row ref")
+
+
+def test_case_insensitive_exact_match():
+    en_to_code, _, code_to_name = _build_set_dicts(SETS_DATA)
+    log: list = []
+    code = _resolve_set_code("FINAL FANTASY", en_to_code, "test", fuzzy_log=log, code_to_name=code_to_name)
+    assert code == "FIN"
+    assert log == []  # exact match after casefold — no fuzzy entry
+
+
+def test_fuzzy_handles_word_reorder(capsys):
+    en_to_code, _, code_to_name = _build_set_dicts(SETS_DATA)
+    log: list = []
+    code = _resolve_set_code(
+        "Commander: Modern Horizons 3", en_to_code, "test",
+        fuzzy_log=log, code_to_name=code_to_name,
+    )
+    assert code == "M3C"
+    assert len(log) == 1
+    inp, match, score = log[0]
+    assert inp == "Commander: Modern Horizons 3"   # original-case input
+    assert match == "Modern Horizons 3 Commander"  # original-case sbwsz name
+    assert score >= 80
+    assert "[fuzzy]" in capsys.readouterr().err
 
 
 # ── name_zh extraction ─────────────────────────────────────────────────────────
@@ -159,7 +185,7 @@ def test_404_returns_null_enrichment(capsys):
             return httpx.Response(404)
 
     client = httpx.Client(transport=_404Transport(), headers={"User-Agent": "test"})
-    en_to_code, code_to_zh = _build_set_dicts(SETS_DATA)
+    en_to_code, code_to_zh, code_to_name = _build_set_dicts(SETS_DATA)
     result = _enrich_row(0, _row(), en_to_code, code_to_zh, client)
     assert result["name_zh"] is None
     assert result["jihuanshe_price_cny"] is None
@@ -171,7 +197,7 @@ def test_404_returns_null_enrichment(capsys):
 def test_view_1_in_cached_url():
     routes = {"https://mtgch.com/api/v1/card/MH3/146/?view=1": _card()}
     client, transport = _make_client(routes)
-    en_to_code, code_to_zh = _build_set_dicts(SETS_DATA)
+    en_to_code, code_to_zh, code_to_name = _build_set_dicts(SETS_DATA)
     _enrich_row(0, _row(), en_to_code, code_to_zh, client)
     assert transport.calls == ["https://mtgch.com/api/v1/card/MH3/146/?view=1"]
 
@@ -179,7 +205,7 @@ def test_view_1_in_cached_url():
 def test_cache_hit_skips_network():
     routes = {"https://mtgch.com/api/v1/card/MH3/146/?view=1": _card()}
     client, transport = _make_client(routes)
-    en_to_code, code_to_zh = _build_set_dicts(SETS_DATA)
+    en_to_code, code_to_zh, code_to_name = _build_set_dicts(SETS_DATA)
 
     _enrich_row(0, _row(), en_to_code, code_to_zh, client)
     assert len(transport.calls) == 1

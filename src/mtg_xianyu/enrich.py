@@ -100,10 +100,11 @@ def _get_card(client: httpx.Client, set_code: str, number: str) -> dict:
 
 def _build_set_dicts(
     sets_data: list[dict],
-) -> tuple[dict[str, str], dict[str, str | None]]:
-    en_to_code = {e["name"]: e["code"] for e in sets_data}
+) -> tuple[dict[str, str], dict[str, str | None], dict[str, str]]:
+    en_to_code = {e["name"].casefold(): e["code"] for e in sets_data}
     code_to_zh = {e["code"]: e.get("translated_name") for e in sets_data}
-    return en_to_code, code_to_zh
+    code_to_name = {e["code"]: e["name"] for e in sets_data}
+    return en_to_code, code_to_zh, code_to_name
 
 
 def _resolve_set_code(
@@ -111,18 +112,22 @@ def _resolve_set_code(
     en_to_code: dict[str, str],
     row_ref: str,
     fuzzy_log: list | None = None,
+    code_to_name: dict[str, str] | None = None,
 ) -> str:
-    if set_name_en in en_to_code:
-        return en_to_code[set_name_en]
+    query = set_name_en.casefold()
+    if query in en_to_code:
+        return en_to_code[query]
     result = process.extractOne(
-        set_name_en, en_to_code.keys(), scorer=fuzz.WRatio, score_cutoff=80
+        query, en_to_code.keys(), scorer=fuzz.WRatio, score_cutoff=80
     )
     if result is not None:
-        matched_name, score, _ = result
-        print(f"[fuzzy] {set_name_en!r} → {matched_name!r} ({score:.0f})", file=sys.stderr)
+        matched_cf, score, _ = result
+        matched_code = en_to_code[matched_cf]
+        matched_name_orig = (code_to_name or {}).get(matched_code, matched_cf)
+        print(f"[fuzzy] {set_name_en!r} → {matched_name_orig!r} ({score:.0f})", file=sys.stderr)
         if fuzzy_log is not None:
-            fuzzy_log.append((set_name_en, matched_name, score))
-        return en_to_code[matched_name]
+            fuzzy_log.append((set_name_en, matched_name_orig, score))
+        return matched_code
     raise ValueError(f"no set_code for {set_name_en!r} in {row_ref}")
 
 
@@ -157,12 +162,13 @@ def _enrich_row(
     code_to_zh: dict[str, str | None],
     client: httpx.Client,
     *,
+    code_to_name: dict[str, str] | None = None,
     stats: dict | None = None,
     fuzzy_log: list | None = None,
 ) -> dict:
     ref = f"source row {idx} ({row.get('name_en', '?')!r})"
     try:
-        set_code = _resolve_set_code(row["set_name_en"], en_to_code, ref, fuzzy_log)
+        set_code = _resolve_set_code(row["set_name_en"], en_to_code, ref, fuzzy_log, code_to_name)
     except ValueError:
         print(f"[no-set] {row['set_name_en']!r} not in sbwsz — enrichment fields will be null", file=sys.stderr)
         if stats is not None:
@@ -216,7 +222,7 @@ def main() -> None:
     total = len(rows)
 
     client = httpx.Client(headers={"User-Agent": USER_AGENT})
-    en_to_code, code_to_zh = _build_set_dicts(_get_sets(client))
+    en_to_code, code_to_zh, code_to_name = _build_set_dicts(_get_sets(client))
 
     stats: dict[str, int] = {
         "official": 0, "community": 0, "null_name": 0, "not_found": 0, "no_set": 0,
@@ -229,7 +235,7 @@ def main() -> None:
         print(f"\r  enriching {idx + 1}/{total} …", end="", flush=True, file=sys.stderr)
         results.append(
             _enrich_row(idx, row, en_to_code, code_to_zh, client,
-                        stats=stats, fuzzy_log=fuzzy_log)
+                        code_to_name=code_to_name, stats=stats, fuzzy_log=fuzzy_log)
         )
     print(file=sys.stderr)
 
