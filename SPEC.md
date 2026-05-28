@@ -395,8 +395,13 @@ useful signal.
   LLM translation? Leaning null + UI prompt for v1.
 - For `scan.py` (§4.7): OCR engine choice (Tesseract / cloud OCR /
   vision-LLM all-in-one). Decide when v2 starts.
-- How sparse is `jihuanshe_price_cny` in practice on the current collection?
-  Answer empirically after the first enrich run.
+- Jihuanshe coverage on the v0.2 enrich run: 723 of 808 rows populated
+  (89.5%). The remaining ~10% degrade to USD-only in the review UI. This
+  is the empirical justification for keeping the dual-source design rather
+  than collapsing to USD-only.
+- Are the 55 cards with 404 responses recoverable via a fourth-tier
+  PLST-style fallback (lookup by name across other printings)?
+  Implement and measure.
 
 ## 8. The sbwsz MCP server (dev-time only)
 
