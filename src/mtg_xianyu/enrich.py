@@ -204,6 +204,61 @@ def _jihuanshe_price(card: dict) -> float | None:
     return float(raw)
 
 
+def _search_card_by_name(
+    client: httpx.Client,
+    name_en: str,
+) -> dict | None:
+    """Search sbwsz for any printing with this exact English name to borrow a Chinese name.
+
+    Returns {"name_zh": str, "is_official": bool, "set": str, "collector_number": str} or None.
+    Caller MUST leave jihuanshe_price_cny and sbwsz_image_uri null — they belong to a
+    different printing and would silently mis-label the row.
+    """
+    safe = re.sub(r"[^\w\-]", "_", name_en)
+    path = _cache_path("cards", "_name_search", safe)
+    cached = _read_cache(path)
+    if cached is not None:
+        if cached.get("_no_match"):
+            return None
+        return cached
+
+    search_url = str(httpx.URL(f"{BASE_URL}/result", params={
+        "q": f'name:"{name_en}"',
+        "priority_chinese": "true",
+        "unique": "oracle_id",
+        "view": "0",
+        "page_size": "50",
+    }))
+    try:
+        data = _fetch(client, search_url)
+    except httpx.HTTPStatusError as exc:
+        print(f"[name-search] {name_en!r}: HTTP {exc.response.status_code}", file=sys.stderr)
+        return None
+    except Exception as exc:
+        print(f"[name-search] {name_en!r}: {exc}", file=sys.stderr)
+        return None
+
+    items = data.get("items") if isinstance(data, dict) else []
+    base_name = name_en.casefold()
+    for item in (items or []):
+        if item.get("name", "").casefold() != base_name:
+            continue
+        zh_name = item.get("atomic_official_name") or item.get("atomic_translated_name")
+        if not zh_name:
+            continue
+        result = {
+            "name_zh": zh_name,
+            "is_official": bool(item.get("atomic_official_name")),
+            "set": item.get("set", ""),
+            "collector_number": item.get("collector_number", ""),
+        }
+        _write_cache(path, result)
+        return result
+
+    _write_cache(path, {"_no_match": True})
+    return None
+
+
 # ── enrichment ────────────────────────────────────────────────────────────────
 
 _SLASH_RE = re.compile(r"^\d+/\d+$")
@@ -220,6 +275,7 @@ def _enrich_row(
     count_to_codes: dict[str, list[str]] | None = None,
     stats: dict | None = None,
     fuzzy_log: list | None = None,
+    name_search_log: list | None = None,
 ) -> dict:
     ref = f"source row {idx} ({row.get('name_en', '?')!r})"
     try:
@@ -240,14 +296,34 @@ def _enrich_row(
     else:
         card = _get_card(client, set_code, cn)
 
+    if not card:
+        borrowed = _search_card_by_name(client, row["name_en"])
+        if stats is not None:
+            if borrowed:
+                stats["borrowed_printing"] += 1
+            else:
+                stats["not_found"] += 1
+            stats["jhs_null"] += 1
+        if name_search_log is not None and borrowed:
+            name_search_log.append({
+                "name_en": row["name_en"],
+                "borrowed_from": f"{borrowed['set']}/{borrowed['collector_number']}",
+            })
+        return {
+            **row,
+            "name_zh": borrowed["name_zh"] if borrowed else None,
+            "set_code": set_code,
+            "set_name_zh": code_to_zh.get(set_code),
+            "sbwsz_image_uri": None,
+            "jihuanshe_price_cny": None,
+        }
+
     jhs = _jihuanshe_price(card)
     name_source = (card.get("translation_info") or {}).get("name_source", "")
     has_name = bool(card.get("primary_name"))
 
     if stats is not None:
-        if not card:
-            stats["not_found"] += 1
-        elif has_name and name_source == "官方中文":
+        if has_name and name_source == "官方中文":
             stats["official"] += 1
         elif has_name:
             stats["community"] += 1
@@ -289,10 +365,11 @@ def main() -> None:
 
     stats: dict[str, int] = {
         "official": 0, "community": 0, "null_name": 0, "not_found": 0, "no_set": 0,
-        "plst_slash_recovered": 0,
+        "plst_slash_recovered": 0, "borrowed_printing": 0,
         "jhs_populated": 0, "jhs_null": 0,
     }
     fuzzy_log: list[tuple[str, str, float]] = []
+    name_search_log: list[dict] = []
     results: list[dict] = []
 
     for idx, row in enumerate(rows):
@@ -300,7 +377,7 @@ def main() -> None:
         results.append(
             _enrich_row(idx, row, en_to_code, code_to_zh, client,
                         code_to_name=code_to_name, count_to_codes=count_to_codes,
-                        stats=stats, fuzzy_log=fuzzy_log)
+                        stats=stats, fuzzy_log=fuzzy_log, name_search_log=name_search_log)
         )
     print(file=sys.stderr)
 
@@ -316,6 +393,13 @@ def main() -> None:
     print(f"  not found in sbwsz (404):           {stats['not_found']:>4}")
     print(f"  set not in sbwsz:                   {stats['no_set']:>4}")
     print(f"  PLST slash-format recovered:        {stats['plst_slash_recovered']:>4}")
+    print(f"  borrowed from other printing:       {stats['borrowed_printing']:>4}")
+
+    if name_search_log:
+        cap = 20
+        print(f"\nborrowed-name details ({min(len(name_search_log), cap)} of {len(name_search_log)}):")
+        for entry in name_search_log[:cap]:
+            print(f"  {entry['name_en']!r} → {entry['borrowed_from']}")
 
     print(f"\njihuanshe_price_cny coverage:")
     print(f"  populated:  {stats['jhs_populated']:>4}")

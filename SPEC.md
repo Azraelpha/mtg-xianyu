@@ -190,15 +190,32 @@ Output `enriched.json` adds, per row:
 `price.py` handles this gracefully (Jihuanshe column greyed out in UI, USD
 column remains pickable).
 
-`name_zh` is `null` when both `atomic_official_name` and
-`atomic_translated_name` are absent — **do not invent.** The UI surfaces these
-gaps for manual entry.
+`name_zh` is `null` only when the entire enrichment chain exhausts — **do not
+invent.** The UI surfaces remaining gaps for manual entry.
 
-**Fuzzy fallback.** TCGPlayer's `Set Name` strings occasionally don't exactly
-match sbwsz's English names (e.g. `"Commander: Modern Horizons 3"` vs sbwsz's
-form). When the exact `en_to_code` lookup misses, fall back to a fuzzy match
-(rapidfuzz WRatio, cutoff 80) against `en_to_code` keys; log every fuzzy match
-to stderr for user review. If neither exact nor fuzzy resolves, raise
+**Enrichment chain for `name_zh` (four tiers, tried in order):**
+
+```
+1. /card/{set_code}/{collector_number}/?view=1 — primary_name from this printing
+     ↓ (404 or no primary_name)
+2. PLST slash-format reconstruction (only when set=PLST, collector_number=N/M)
+     Enumerate all sbwsz sets with card_count=M; probe PLST/{code}-{N};
+     accept first whose faces[0].name matches exactly.
+     ↓ (no candidates, or all name-mismatch)
+3. /result?q=name:"{name_en}"&priority_chinese=true&unique=oracle_id
+     Search for any printing of the card; accept first item whose "name" field
+     matches name_en exactly (case-insensitive); take atomic_official_name or
+     atomic_translated_name. Leave jihuanshe_price_cny and sbwsz_image_uri null
+     — they belong to the matched printing, not the row's printing.
+     ↓ (no exact-name match, or no Chinese name in any result)
+4. null — surface gap in UI for manual entry.
+```
+
+**Set-name fallback (fuzzy).** TCGPlayer's `Set Name` strings occasionally don't
+exactly match sbwsz's English names (e.g. `"Commander: Modern Horizons 3"` vs
+sbwsz's form). When the exact `en_to_code` lookup misses, fall back to a fuzzy
+match (rapidfuzz WRatio, cutoff 80) against `en_to_code` keys; log every fuzzy
+match to stderr for user review. If neither exact nor fuzzy resolves, raise
 `ValueError` with the row reference — the failure is unrecoverable downstream.
 
 ### 4.3 Match — `match.py`

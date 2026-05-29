@@ -5,6 +5,7 @@ import pytest
 
 from mtg_xianyu import enrich
 from mtg_xianyu.enrich import (
+    BASE_URL,
     _build_count_to_codes,
     _build_set_dicts,
     _enrich_row,
@@ -12,6 +13,7 @@ from mtg_xianyu.enrich import (
     _name_zh,
     _resolve_plst_slash,
     _resolve_set_code,
+    _search_card_by_name,
 )
 
 # ── test data ──────────────────────────────────────────────────────────────────
@@ -294,3 +296,119 @@ def test_plst_slash_all_candidates_wrong():
     result = _resolve_plst_slash(client, "048/249", "Target Card Name", count_to_codes)
     assert result == {}
     assert len(transport.calls) == 2  # exhausted all candidates
+
+
+# ── name-search fallback ───────────────────────────────────────────────────────
+
+def _search_url(name_en: str) -> str:
+    """Build the exact URL that _search_card_by_name will request."""
+    return str(httpx.URL(f"{BASE_URL}/result", params={
+        "q": f'name:"{name_en}"',
+        "priority_chinese": "true",
+        "unique": "oracle_id",
+        "view": "0",
+        "page_size": "50",
+    }))
+
+
+def _search_response(items: list[dict]) -> dict:
+    return {"count": len(items), "page": 1, "page_size": 50, "total_pages": 1, "items": items}
+
+
+def _search_item(name: str, official: str | None = None, translated: str | None = None,
+                 set_code: str = "SLD", collector_number: str = "1") -> dict:
+    return {
+        "name": name,
+        "atomic_official_name": official,
+        "atomic_translated_name": translated,
+        "set": set_code,
+        "collector_number": collector_number,
+        "prices": {"usd": "1.00"},
+    }
+
+
+def test_name_fallback_exact_match():
+    # Search returns two items; only second exactly matches name_en and has a Chinese name
+    items = [
+        _search_item("Lightning Bolt Wand", official="闪电棒", set_code="XYZ"),  # wrong name
+        _search_item("Lightning Bolt", official="闪电击", set_code="M10", collector_number="146"),
+    ]
+    routes = {_search_url("Lightning Bolt"): _search_response(items)}
+    client, _ = _make_client(routes)
+    result = _search_card_by_name(client, "Lightning Bolt")
+    assert result is not None
+    assert result["name_zh"] == "闪电击"
+    assert result["is_official"] is True
+    assert result["set"] == "M10"
+    assert result["collector_number"] == "146"
+
+
+def test_name_fallback_no_exact_match():
+    # Search returns only fuzzy/partial matches; fallback returns None
+    items = [
+        _search_item("Lightning Bolt Wand", official="闪电棒"),
+        _search_item("Chain Lightning", official="连锁闪电"),
+    ]
+    routes = {_search_url("Lightning Bolt"): _search_response(items)}
+    client, _ = _make_client(routes)
+    result = _search_card_by_name(client, "Lightning Bolt")
+    assert result is None
+
+
+def test_name_fallback_search_500():
+    # Search endpoint returns 500; fallback returns None gracefully (no crash)
+    class _500Transport(httpx.BaseTransport):
+        def handle_request(self, request: httpx.Request) -> httpx.Response:
+            return httpx.Response(500, json={"error": "internal server error"})
+
+    client = httpx.Client(transport=_500Transport(), headers={"User-Agent": "test"})
+    result = _search_card_by_name(client, "Demonic Tutor")
+    assert result is None
+
+
+def test_name_fallback_does_not_borrow_price():
+    # Borrowed result must not contribute jihuanshe_price_cny even if search item has prices
+    items = [_search_item("Demonic Tutor", official="邪魔导师", set_code="SLD", collector_number="1856")]
+    search_routes = {_search_url("Demonic Tutor"): _search_response(items)}
+    # Make the primary card lookup 404
+    class _404Transport(httpx.BaseTransport):
+        def __init__(self, fallback_routes):
+            self._fb = fallback_routes
+            self.calls = []
+        def handle_request(self, request):
+            url = str(request.url)
+            self.calls.append(url)
+            if url in self._fb:
+                return httpx.Response(200, json=self._fb[url])
+            return httpx.Response(404)
+
+    client = httpx.Client(transport=_404Transport(search_routes), headers={"User-Agent": "test"})
+    en_to_code, code_to_zh, code_to_name = _build_set_dicts(SETS_DATA)
+    row = _row(set_name_en="Modern Horizons 3", name_en="Demonic Tutor", collector_number="999")
+    result = _enrich_row(0, row, en_to_code, code_to_zh, client,
+                         code_to_name=code_to_name)
+    assert result["name_zh"] == "邪魔导师"
+    assert result["jihuanshe_price_cny"] is None  # must not borrow
+
+
+def test_name_fallback_does_not_borrow_image():
+    # Same setup — image_uri must stay null even if search result has image fields
+    items = [_search_item("Demonic Tutor", official="邪魔导师", set_code="SLD", collector_number="1856")]
+    search_routes = {_search_url("Demonic Tutor"): _search_response(items)}
+
+    class _404Transport(httpx.BaseTransport):
+        def __init__(self, fallback_routes):
+            self._fb = fallback_routes
+        def handle_request(self, request):
+            url = str(request.url)
+            if url in self._fb:
+                return httpx.Response(200, json=self._fb[url])
+            return httpx.Response(404)
+
+    client = httpx.Client(transport=_404Transport(search_routes), headers={"User-Agent": "test"})
+    en_to_code, code_to_zh, code_to_name = _build_set_dicts(SETS_DATA)
+    row = _row(set_name_en="Modern Horizons 3", name_en="Demonic Tutor", collector_number="999")
+    result = _enrich_row(0, row, en_to_code, code_to_zh, client,
+                         code_to_name=code_to_name)
+    assert result["name_zh"] == "邪魔导师"
+    assert result["sbwsz_image_uri"] is None  # must not borrow
