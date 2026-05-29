@@ -142,7 +142,7 @@ def _resolve_plst_slash(
         return cached
 
     candidates = count_to_codes.get(total_str, [])
-    base_name = name_en.casefold()
+    base_name = _strip_parenthetical(name_en).casefold()
 
     for code in candidates:
         compound = f"{code}-{num}"
@@ -204,6 +204,23 @@ def _jihuanshe_price(card: dict) -> float | None:
     return float(raw)
 
 
+_TRAILING_PAREN_RE = re.compile(r'\s*\([^)]*\)\s*$')
+
+
+def _strip_parenthetical(name: str) -> str:
+    """Strip ALL trailing parenthetical groups from a card name.
+
+    'Foo (DVD)' → 'Foo'
+    'Foo (A) (B)' → 'Foo'
+    'Foo (Inner) Bar' → 'Foo (Inner) Bar'  (mid-string parens preserved)
+    """
+    prev = None
+    while prev != name:
+        prev = name
+        name = _TRAILING_PAREN_RE.sub("", name)
+    return name
+
+
 def _search_card_by_name(
     client: httpx.Client,
     name_en: str,
@@ -214,7 +231,8 @@ def _search_card_by_name(
     Caller MUST leave jihuanshe_price_cny and sbwsz_image_uri null — they belong to a
     different printing and would silently mis-label the row.
     """
-    safe = re.sub(r"[^\w\-]", "_", name_en)
+    bare_name = _strip_parenthetical(name_en)
+    safe = re.sub(r"[^\w\-]", "_", bare_name)
     path = _cache_path("cards", "_name_search", safe)
     cached = _read_cache(path)
     if cached is not None:
@@ -223,7 +241,7 @@ def _search_card_by_name(
         return cached
 
     search_url = str(httpx.URL(f"{BASE_URL}/result", params={
-        "q": f'name:"{name_en}"',
+        "q": f'name:"{bare_name}"',
         "priority_chinese": "true",
         "unique": "oracle_id",
         "view": "0",
@@ -239,7 +257,7 @@ def _search_card_by_name(
         return None
 
     items = data.get("items") if isinstance(data, dict) else []
-    base_name = name_en.casefold()
+    base_name = bare_name.casefold()
     for item in (items or []):
         if item.get("name", "").casefold() != base_name:
             continue

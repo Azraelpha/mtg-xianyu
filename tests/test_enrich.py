@@ -14,6 +14,7 @@ from mtg_xianyu.enrich import (
     _resolve_plst_slash,
     _resolve_set_code,
     _search_card_by_name,
+    _strip_parenthetical,
 )
 
 # ── test data ──────────────────────────────────────────────────────────────────
@@ -301,9 +302,10 @@ def test_plst_slash_all_candidates_wrong():
 # ── name-search fallback ───────────────────────────────────────────────────────
 
 def _search_url(name_en: str) -> str:
-    """Build the exact URL that _search_card_by_name will request."""
+    """Build the exact URL that _search_card_by_name will request (strips parens first)."""
+    bare = _strip_parenthetical(name_en)
     return str(httpx.URL(f"{BASE_URL}/result", params={
-        "q": f'name:"{name_en}"',
+        "q": f'name:"{bare}"',
         "priority_chinese": "true",
         "unique": "oracle_id",
         "view": "0",
@@ -412,3 +414,62 @@ def test_name_fallback_does_not_borrow_image():
                          code_to_name=code_to_name)
     assert result["name_zh"] == "邪魔导师"
     assert result["sbwsz_image_uri"] is None  # must not borrow
+
+
+# ── _strip_parenthetical ───────────────────────────────────────────────────────
+
+def test_strip_parenthetical_single():
+    assert _strip_parenthetical("Foo (DVD)") == "Foo"
+
+
+def test_strip_parenthetical_double():
+    assert _strip_parenthetical("Foo (A) (B)") == "Foo"
+
+
+def test_strip_parenthetical_no_parens():
+    assert _strip_parenthetical("Foo") == "Foo"
+
+
+def test_strip_parenthetical_mid_string_preserved():
+    # trailing group stripped; mid-string group preserved
+    assert _strip_parenthetical("Name With (Middle) Parens And (Trailing)") == "Name With (Middle) Parens And"
+    # no trailing group → unchanged
+    assert _strip_parenthetical("Name With (Middle) Parens Only") == "Name With (Middle) Parens Only"
+
+
+def test_name_fallback_strips_parenthetical_in_query():
+    # search URL must use bare name; mock keyed on stripped URL would 404 if not stripped
+    items = [_search_item("Demonic Tutor", official="邪魔导师")]
+    routes = {_search_url("Demonic Tutor"): _search_response(items)}  # bare name key
+    client, transport = _make_client(routes)
+    result = _search_card_by_name(client, "Demonic Tutor (DVD)")
+    assert result is not None
+    assert result["name_zh"] == "邪魔导师"
+    # Called URL must not contain the suffix
+    assert len(transport.calls) == 1
+    assert "DVD" not in transport.calls[0]
+
+
+def test_name_fallback_strips_parenthetical_in_comparison():
+    # item has bare name; row has parenthetical suffix — both sides stripped before compare
+    items = [
+        _search_item("Demonic Tutor (DVD)", official="假结果"),  # wrong: item with suffix, must be rejected
+        _search_item("Demonic Tutor", official="邪魔导师"),       # correct: bare name matches
+    ]
+    routes = {_search_url("Demonic Tutor (DVD)"): _search_response(items)}
+    client, _ = _make_client(routes)
+    result = _search_card_by_name(client, "Demonic Tutor (DVD)")
+    assert result is not None
+    assert result["name_zh"] == "邪魔导师"
+
+
+def test_plst_slash_strips_parenthetical():
+    # PLST slash-format where name_en has trailing set code: "Cryptic Command (IMA)"
+    # face_name from sbwsz is bare "Cryptic Command" — must match after strip
+    count_to_codes = {"249": ["IMA"]}
+    routes = {
+        "https://mtgch.com/api/v1/card/PLST/IMA-48/?view=1": _card_named("Cryptic Command", "地下指命"),
+    }
+    client, _ = _make_client(routes)
+    result = _resolve_plst_slash(client, "048/249", "Cryptic Command (IMA)", count_to_codes)
+    assert result["primary_name"] == "地下指命"
