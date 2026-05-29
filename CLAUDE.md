@@ -163,6 +163,12 @@ re-runnable.
 - **sbwsz's `/api/v1/card/` endpoint returns a lean response by default;
   only `?view=1` includes `prices.cny` and the `versions` array. Always
   include `?view=1` on card requests.**
+- **Uniform failure patterns almost always indicate a normalization
+  mismatch, not missing data.** If a batch of cards all fail for the same
+  structural reason (e.g. every unrecoverable card shares trailing
+  parenthetical suffixes), diagnose the pattern before accepting the gap
+  as structural. The 18-card gap in enrich v0.3 looked like missing sbwsz
+  data but was entirely a name-normalization mismatch.
 
 ## Commands
 

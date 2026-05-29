@@ -412,13 +412,26 @@ useful signal.
   LLM translation? Leaning null + UI prompt for v1.
 - For `scan.py` (§4.7): OCR engine choice (Tesseract / cloud OCR /
   vision-LLM all-in-one). Decide when v2 starts.
-- Jihuanshe coverage on the v0.2 enrich run: 723 of 808 rows populated
-  (89.5%). The remaining ~10% degrade to USD-only in the review UI. This
-  is the empirical justification for keeping the dual-source design rather
-  than collapsing to USD-only.
-- Are the 55 cards with 404 responses recoverable via a fourth-tier
-  PLST-style fallback (lookup by name across other printings)?
-  Implement and measure.
+- **Jihuanshe coverage (v0.3 measured):** 730/808 = 90.4% populated.
+  The dual-source pricing design in §4.4 is justified; ~10% of rows
+  degrade to USD-only in the review UI.
+- **PLST/404 recovery (v0.3 measured):** slash-format path recovered 6
+  cards directly; name-search fallback recovered 48 cards (covering PLST
+  plain-format, slash-format fallthroughs, and promo 404s). After the
+  parenthetical-suffix strip fix, final unrecoverable count is 0 — every
+  card in the collection has a Chinese name through some path. The 18-card
+  gap that remained after the first two recovery passes was traced to a
+  single root cause: TCGPlayer appends suffixes like `(DVD)`, `(IMA)`,
+  `(Bundle Promo)` to product names that sbwsz stores without. The fix
+  was a name-normalization helper applied to both slash-format and
+  name-search comparison paths.
+- **Known limitation — two rows with incorrect set_code:** `MagicFest
+  Cards` and `SLX Cards` both fuzzy-matched to `Teenage Mutant Ninja
+  Turtles Eternal Front Cards` at score 86 (above the 80 cutoff). The
+  card lookups 404, name-search recovers the Chinese names, and
+  user-visible output is correct; only the internal `set_code` field is
+  wrong. If the review UI uses `set_code` beyond display, raise the fuzzy
+  cutoff to 88+ or add post-fuzzy card-existence verification.
 
 ## 8. The sbwsz MCP server (dev-time only)
 
