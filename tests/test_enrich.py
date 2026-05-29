@@ -5,10 +5,12 @@ import pytest
 
 from mtg_xianyu import enrich
 from mtg_xianyu.enrich import (
+    _build_count_to_codes,
     _build_set_dicts,
     _enrich_row,
     _jihuanshe_price,
     _name_zh,
+    _resolve_plst_slash,
     _resolve_set_code,
 )
 
@@ -19,6 +21,8 @@ SETS_DATA = [
     {"code": "SLD", "name": "Secret Lair Drop", "translated_name": "秘密巢穴"},
     {"code": "M3C", "name": "Modern Horizons 3 Commander", "translated_name": "摩登新篇3统帅"},
     {"code": "FIN", "name": "Final Fantasy", "translated_name": "最终幻想"},
+    {"code": "PLST", "name": "The List", "translated_name": "系列：精选", "card_count": 300},
+    {"code": "UMA", "name": "Ultimate Masters", "translated_name": "终极大师", "card_count": 254},
 ]
 
 
@@ -212,3 +216,81 @@ def test_cache_hit_skips_network():
 
     _enrich_row(0, _row(), en_to_code, code_to_zh, client)
     assert len(transport.calls) == 1  # cache hit — no second request
+
+
+# ── PLST slash-format recovery ─────────────────────────────────────────────────
+
+def _card_named(en_name: str, zh_name: str = "中文名") -> dict:
+    """Card whose faces[0]["name"] is en_name."""
+    return _card(
+        primary_name=zh_name,
+        faces=[{
+            "name": en_name,
+            "image_uris": {"normal": "https://example.com/img.jpg"},
+            "zhs_image_uris": {"normal": "https://example.com/zhs.jpg"},
+        }],
+    )
+
+
+def test_plst_slash_unique_total():
+    # card_count=254 → only UMA; "077/254" → PLST/UMA-77
+    count_to_codes = _build_count_to_codes(SETS_DATA)  # UMA: card_count=254
+    routes = {"https://mtgch.com/api/v1/card/PLST/UMA-77/?view=1": _card_named("Temporal Manipulation", "操弄时间")}
+    client, transport = _make_client(routes)
+    result = _resolve_plst_slash(client, "077/254", "Temporal Manipulation", count_to_codes)
+    assert result["primary_name"] == "操弄时间"
+    assert transport.calls == ["https://mtgch.com/api/v1/card/PLST/UMA-77/?view=1"]
+
+
+def test_plst_slash_collision_name_match():
+    # card_count=249 → WRONG then RIGHT; wrong candidate probed first, rejected by name; right wins
+    count_to_codes = {"249": ["WRONG", "RIGHT"]}  # explicit: WRONG comes first
+    routes = {
+        "https://mtgch.com/api/v1/card/PLST/WRONG-48/?view=1": _card_named("Drain Power", "魔力流失"),
+        "https://mtgch.com/api/v1/card/PLST/RIGHT-48/?view=1": _card_named("Cryptic Command", "奥秘命令"),
+    }
+    client, transport = _make_client(routes)
+    result = _resolve_plst_slash(client, "048/249", "Cryptic Command", count_to_codes)
+    assert result["primary_name"] == "奥秘命令"
+    # Both candidates were probed
+    assert len(transport.calls) == 2
+    assert "WRONG-48" in transport.calls[0]
+    assert "RIGHT-48" in transport.calls[1]
+
+
+def test_plst_slash_no_matching_total():
+    # card_count=361 → no sets in SETS_DATA → null, zero network calls
+    count_to_codes = _build_count_to_codes(SETS_DATA)
+    client, transport = _make_client({})
+    result = _resolve_plst_slash(client, "261/361", "Three Visits", count_to_codes)
+    assert result == {}
+    assert transport.calls == []
+
+
+def test_plst_plain_format_unaffected():
+    # collector_number "49" (no slash) → goes to _get_card, not slash resolver → 404 → null
+    class _404Transport(httpx.BaseTransport):
+        def handle_request(self, request: httpx.Request) -> httpx.Response:
+            return httpx.Response(404)
+
+    client = httpx.Client(transport=_404Transport(), headers={"User-Agent": "test"})
+    en_to_code, code_to_zh, code_to_name = _build_set_dicts(SETS_DATA)
+    count_to_codes = _build_count_to_codes(SETS_DATA)
+    row = _row(set_name_en="The List", name_en="Opt", collector_number="49")
+    result = _enrich_row(0, row, en_to_code, code_to_zh, client,
+                         code_to_name=code_to_name, count_to_codes=count_to_codes)
+    assert result["name_zh"] is None
+    assert result["jihuanshe_price_cny"] is None
+
+
+def test_plst_slash_all_candidates_wrong():
+    # Both candidates return the wrong English name → null, not false-accept
+    count_to_codes = {"249": ["WRONG", "RIGHT"]}
+    routes = {
+        "https://mtgch.com/api/v1/card/PLST/WRONG-48/?view=1": _card_named("Not The Card", "不是"),
+        "https://mtgch.com/api/v1/card/PLST/RIGHT-48/?view=1": _card_named("Also Not The Card", "也不是"),
+    }
+    client, transport = _make_client(routes)
+    result = _resolve_plst_slash(client, "048/249", "Target Card Name", count_to_codes)
+    assert result == {}
+    assert len(transport.calls) == 2  # exhausted all candidates

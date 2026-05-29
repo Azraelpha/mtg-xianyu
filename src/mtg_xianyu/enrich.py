@@ -10,6 +10,7 @@ Missing Chinese names are left null — never invented. Writes enriched.json.
 
 import argparse
 import json
+import re
 import sys
 import time
 from pathlib import Path
@@ -107,6 +108,56 @@ def _build_set_dicts(
     return en_to_code, code_to_zh, code_to_name
 
 
+def _build_count_to_codes(sets_data: list[dict]) -> dict[str, list[str]]:
+    """Map card_count → [set_codes] for slash-format PLST reconstruction."""
+    result: dict[str, list[str]] = {}
+    for s in sets_data:
+        cc = s.get("card_count")
+        if cc:
+            result.setdefault(str(cc), []).append(s["code"])
+    return result
+
+
+def _resolve_plst_slash(
+    client: httpx.Client,
+    collector_number: str,
+    name_en: str,
+    count_to_codes: dict[str, list[str]],
+) -> dict:
+    """Resolve a slash-format PLST collector number (e.g. "048/249") to a card.
+
+    Enumerates all sbwsz sets whose card_count equals the slash total, probes
+    each compound key PLST/{set_code}-{num}, and accepts the first whose
+    English name exactly matches name_en (case-insensitive).
+    """
+    num_str, total_str = collector_number.split("/", 1)
+    num = str(int(num_str))          # strip leading zeros: "048" → "48"
+
+    # Top-level cache for the slash resolution (distinct from per-compound caches)
+    path = _cache_path("cards", "PLST_slash", f"{num}_{total_str}")
+    cached = _read_cache(path)
+    if cached is not None:
+        if cached.get("_exhausted"):
+            return {}
+        return cached
+
+    candidates = count_to_codes.get(total_str, [])
+    base_name = name_en.casefold()
+
+    for code in candidates:
+        compound = f"{code}-{num}"
+        card = _get_card(client, "PLST", compound)
+        if not card:
+            continue
+        face_name = ((card.get("faces") or [{}])[0]).get("name", "")
+        if face_name.casefold() == base_name:
+            _write_cache(path, card)
+            return card
+
+    _write_cache(path, {"_exhausted": True})
+    return {}
+
+
 def _resolve_set_code(
     set_name_en: str,
     en_to_code: dict[str, str],
@@ -155,6 +206,9 @@ def _jihuanshe_price(card: dict) -> float | None:
 
 # ── enrichment ────────────────────────────────────────────────────────────────
 
+_SLASH_RE = re.compile(r"^\d+/\d+$")
+
+
 def _enrich_row(
     idx: int,
     row: dict,
@@ -163,6 +217,7 @@ def _enrich_row(
     client: httpx.Client,
     *,
     code_to_name: dict[str, str] | None = None,
+    count_to_codes: dict[str, list[str]] | None = None,
     stats: dict | None = None,
     fuzzy_log: list | None = None,
 ) -> dict:
@@ -177,7 +232,13 @@ def _enrich_row(
         return {**row, "name_zh": None, "set_code": None, "set_name_zh": None,
                 "sbwsz_image_uri": None, "jihuanshe_price_cny": None}
 
-    card = _get_card(client, set_code, row["collector_number"])
+    cn = row["collector_number"]
+    if set_code == "PLST" and _SLASH_RE.match(cn):
+        card = _resolve_plst_slash(client, cn, row["name_en"], count_to_codes or {})
+        if card and stats is not None:
+            stats["plst_slash_recovered"] += 1
+    else:
+        card = _get_card(client, set_code, cn)
 
     jhs = _jihuanshe_price(card)
     name_source = (card.get("translation_info") or {}).get("name_source", "")
@@ -222,10 +283,13 @@ def main() -> None:
     total = len(rows)
 
     client = httpx.Client(headers={"User-Agent": USER_AGENT})
-    en_to_code, code_to_zh, code_to_name = _build_set_dicts(_get_sets(client))
+    sets_data = _get_sets(client)
+    en_to_code, code_to_zh, code_to_name = _build_set_dicts(sets_data)
+    count_to_codes = _build_count_to_codes(sets_data)
 
     stats: dict[str, int] = {
         "official": 0, "community": 0, "null_name": 0, "not_found": 0, "no_set": 0,
+        "plst_slash_recovered": 0,
         "jhs_populated": 0, "jhs_null": 0,
     }
     fuzzy_log: list[tuple[str, str, float]] = []
@@ -235,7 +299,8 @@ def main() -> None:
         print(f"\r  enriching {idx + 1}/{total} …", end="", flush=True, file=sys.stderr)
         results.append(
             _enrich_row(idx, row, en_to_code, code_to_zh, client,
-                        code_to_name=code_to_name, stats=stats, fuzzy_log=fuzzy_log)
+                        code_to_name=code_to_name, count_to_codes=count_to_codes,
+                        stats=stats, fuzzy_log=fuzzy_log)
         )
     print(file=sys.stderr)
 
@@ -250,6 +315,7 @@ def main() -> None:
     print(f"  null (primary_name absent):         {stats['null_name']:>4}")
     print(f"  not found in sbwsz (404):           {stats['not_found']:>4}")
     print(f"  set not in sbwsz:                   {stats['no_set']:>4}")
+    print(f"  PLST slash-format recovered:        {stats['plst_slash_recovered']:>4}")
 
     print(f"\njihuanshe_price_cny coverage:")
     print(f"  populated:  {stats['jhs_populated']:>4}")
