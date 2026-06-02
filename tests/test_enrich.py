@@ -6,6 +6,7 @@ import pytest
 from mtg_xianyu import enrich
 from mtg_xianyu.enrich import (
     BASE_URL,
+    _assign_row_ids,
     _build_count_to_codes,
     _build_set_dicts,
     _enrich_row,
@@ -473,3 +474,41 @@ def test_plst_slash_strips_parenthetical():
     client, _ = _make_client(routes)
     result = _resolve_plst_slash(client, "048/249", "Cryptic Command (IMA)", count_to_codes)
     assert result["primary_name"] == "地下指命"
+
+
+# ── row ID assignment ──────────────────────────────────────────────────────────
+
+def test_assign_row_ids_present():
+    rows = [{"product_id": 1, "name_en": "A"}, {"product_id": 2, "name_en": "B"}]
+    result = _assign_row_ids(rows)
+    assert all("row_id" in r for r in result)
+
+
+def test_assign_row_ids_unique():
+    rows = [
+        {"product_id": 1, "name_en": "A"},
+        {"product_id": 1, "name_en": "A copy"},
+        {"product_id": 2, "name_en": "B"},
+        {"product_id": 2, "name_en": "B copy"},
+    ]
+    result = _assign_row_ids(rows)
+    ids = [r["row_id"] for r in result]
+    assert len(ids) == len(set(ids))
+
+
+def test_assign_row_ids_copy_suffix():
+    # Three copies of product 99, one copy of product 7
+    rows = [
+        {"product_id": 99}, {"product_id": 99}, {"product_id": 7}, {"product_id": 99},
+    ]
+    result = _assign_row_ids(rows)
+    assert result[0]["row_id"] == "99_0"
+    assert result[1]["row_id"] == "99_1"
+    assert result[2]["row_id"] == "7_0"   # independent counter
+    assert result[3]["row_id"] == "99_2"
+
+
+def test_assign_row_ids_does_not_mutate_input():
+    rows = [{"product_id": 5, "name_en": "X"}]
+    _assign_row_ids(rows)
+    assert "row_id" not in rows[0]  # original untouched

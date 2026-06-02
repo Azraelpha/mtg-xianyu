@@ -365,6 +365,25 @@ def _enrich_row(
     }
 
 
+# ── row ID assignment ─────────────────────────────────────────────────────────
+
+def _assign_row_ids(rows: list[dict]) -> list[dict]:
+    """Inject a stable row_id ({product_id}_{n}) into each row.
+
+    n is the 0-indexed copy number within rows sharing the same product_id,
+    in input order — handles the qty-expansion case where one TCGPlayer line
+    becomes multiple physical-card rows.
+    """
+    counts: dict[int, int] = {}
+    result = []
+    for row in rows:
+        pid = row.get("product_id", 0)
+        n = counts.get(pid, 0)
+        result.append({**row, "row_id": f"{pid}_{n}"})
+        counts[pid] = n + 1
+    return result
+
+
 # ── entry point ───────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -398,6 +417,8 @@ def main() -> None:
                         stats=stats, fuzzy_log=fuzzy_log, name_search_log=name_search_log)
         )
     print(file=sys.stderr)
+
+    results = _assign_row_ids(results)
 
     out = Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)
