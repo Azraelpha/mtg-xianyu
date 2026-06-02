@@ -412,19 +412,22 @@ useful signal.
   LLM translation? Leaning null + UI prompt for v1.
 - For `scan.py` (§4.7): OCR engine choice (Tesseract / cloud OCR /
   vision-LLM all-in-one). Decide when v2 starts.
-- **Jihuanshe coverage (v0.3 measured):** 730/808 = 90.4% populated.
-  The dual-source pricing design in §4.4 is justified; ~10% of rows
-  degrade to USD-only in the review UI.
-- **PLST/404 recovery (v0.3 measured):** slash-format path recovered 6
-  cards directly; name-search fallback recovered 48 cards (covering PLST
-  plain-format, slash-format fallthroughs, and promo 404s). After the
-  parenthetical-suffix strip fix, final unrecoverable count is 0 — every
-  card in the collection has a Chinese name through some path. The 18-card
-  gap that remained after the first two recovery passes was traced to a
-  single root cause: TCGPlayer appends suffixes like `(DVD)`, `(IMA)`,
-  `(Bundle Promo)` to product names that sbwsz stores without. The fix
-  was a name-normalization helper applied to both slash-format and
-  name-search comparison paths.
+- **Final coverage at v0.4:** 803/808 `name_zh` populated (99.4%), with
+  the 5 nulls being structurally honest unresolvables (very niche promos
+  where name-search found no match in sbwsz). 704/808 JHS prices populated
+  (87.1%). The earlier v0.3 claim of 808/808 was inflated by 35 silently-wrong
+  primary-lookup hits — cards whose TCGPlayer collector_number collided with
+  a different card in sbwsz, returning HTTP 200 for the wrong card.
+  Discovered during v0.4 stage-2 UI verification when a user noticed
+  Solitude displaying the wrong Chinese name. Fixed by adding name-match
+  verification to the primary lookup path (`_normalize_for_compare`).
+- **Known limitation — TCGPlayer / sbwsz collector_number mismatches for
+  variant cards:** Retro Frame, Showcase, Borderless, and some promo cards
+  use a TCGPlayer-internal numbering that differs from sbwsz's set numbering.
+  When they disagree, the primary lookup must verify by name before accepting
+  the result. The verification (`_normalize_for_compare`) handles three
+  format quirks: split cards (`X // Y`), SLD dash format (`X - Y`), and
+  diacritic variations (`Arna Kennerud` / `Arna Kennerüd`).
 - **Known limitation — two rows with incorrect set_code:** `MagicFest
   Cards` and `SLX Cards` both fuzzy-matched to `Teenage Mutant Ninja
   Turtles Eternal Front Cards` at score 86 (above the 80 cutoff). The

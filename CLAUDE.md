@@ -8,7 +8,10 @@ See `@./SPEC.md` for the full design.
 
 ## Status
 
-v0.1 — parse.py complete (12 tests passing); enrich.py next.
+v0.4 in progress — enrich.py complete with name-match verification
+(803/808 correctly enriched, 5 honest nulls); UI stage 2 complete
+(read-only view, dual prices, editable name field); stage 3 (state
+persistence) next.
 
 ## Stack
 
@@ -169,6 +172,11 @@ re-runnable.
   parenthetical suffixes), diagnose the pattern before accepting the gap
   as structural. The 18-card gap in enrich v0.3 looked like missing sbwsz
   data but was entirely a name-normalization mismatch.
+- **A HTTP 200 response from sbwsz's `/card/{set}/{number}/` does NOT
+  guarantee the returned card is the one you asked for** — collector_number
+  conflicts between TCGPlayer and sbwsz can return a real-but-wrong card.
+  `_get_card` verifies `faces[0].name` against the requested row's `name_en`
+  before accepting. Same principle as the PLST slash collision verification.
 
 ## Commands
 
