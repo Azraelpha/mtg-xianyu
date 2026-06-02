@@ -13,6 +13,7 @@ import json
 import re
 import sys
 import time
+import unicodedata
 from pathlib import Path
 
 import httpx
@@ -221,6 +222,48 @@ def _strip_parenthetical(name: str) -> str:
     return name
 
 
+def _normalize_for_compare(name: str) -> set[str]:
+    """Return all acceptable canonical forms of a card name for matching.
+
+    Handles three systematic differences between TCGPlayer and sbwsz:
+      - Trailing parentheticals: 'Foo (DVD)' → 'foo'
+      - Split cards: 'Find // Finality' also matches sbwsz's 'Find'
+      - SLD dash format: 'Miku - Giada, Font of Hope' also matches 'Giada, Font of Hope'
+      - Diacritics: 'Arna Kennerud' matches sbwsz's 'Arna Kennerüd'
+
+    A primary lookup is accepted when the row's forms and the card's
+    forms share at least one element.
+    """
+    forms: set[str] = set()
+
+    def add(s: str) -> None:
+        s = s.strip()
+        if not s:
+            return
+        while True:
+            stripped = _TRAILING_PAREN_RE.sub("", s).strip()
+            if stripped == s:
+                break
+            s = stripped
+        if not s:
+            return
+        forms.add(s.casefold())
+        ascii_form = (
+            unicodedata.normalize("NFKD", s)
+            .encode("ascii", "ignore")
+            .decode("ascii")
+        )
+        if ascii_form and ascii_form.casefold() != s.casefold():
+            forms.add(ascii_form.casefold())
+
+    add(name)
+    if " // " in name:
+        add(name.split(" // ", 1)[0])
+    if " - " in name:
+        add(name.split(" - ", 1)[1])
+    return forms
+
+
 def _search_card_by_name(
     client: httpx.Client,
     name_en: str,
@@ -313,6 +356,18 @@ def _enrich_row(
             stats["plst_slash_recovered"] += 1
     else:
         card = _get_card(client, set_code, cn)
+        if card:
+            face_name = ((card.get("faces") or [{}])[0]).get("name", "")
+            if face_name:
+                if not (_normalize_for_compare(row["name_en"]) & _normalize_for_compare(face_name)):
+                    print(
+                        f"[wrong-card] {set_code}/{cn}: asked for "
+                        f"{row['name_en']!r}, got {face_name!r} — treating as miss",
+                        file=sys.stderr,
+                    )
+                    if stats is not None:
+                        stats["primary_lookup_wrong_card"] += 1
+                    card = {}
 
     if not card:
         borrowed = _search_card_by_name(client, row["name_en"])
@@ -402,7 +457,7 @@ def main() -> None:
 
     stats: dict[str, int] = {
         "official": 0, "community": 0, "null_name": 0, "not_found": 0, "no_set": 0,
-        "plst_slash_recovered": 0, "borrowed_printing": 0,
+        "plst_slash_recovered": 0, "primary_lookup_wrong_card": 0, "borrowed_printing": 0,
         "jhs_populated": 0, "jhs_null": 0,
     }
     fuzzy_log: list[tuple[str, str, float]] = []
@@ -432,6 +487,7 @@ def main() -> None:
     print(f"  not found in sbwsz (404):           {stats['not_found']:>4}")
     print(f"  set not in sbwsz:                   {stats['no_set']:>4}")
     print(f"  PLST slash-format recovered:        {stats['plst_slash_recovered']:>4}")
+    print(f"  primary lookup wrong card:          {stats['primary_lookup_wrong_card']:>4}")
     print(f"  borrowed from other printing:       {stats['borrowed_printing']:>4}")
 
     if name_search_log:

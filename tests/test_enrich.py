@@ -12,6 +12,7 @@ from mtg_xianyu.enrich import (
     _enrich_row,
     _jihuanshe_price,
     _name_zh,
+    _normalize_for_compare,
     _resolve_plst_slash,
     _resolve_set_code,
     _search_card_by_name,
@@ -512,3 +513,58 @@ def test_assign_row_ids_does_not_mutate_input():
     rows = [{"product_id": 5, "name_en": "X"}]
     _assign_row_ids(rows)
     assert "row_id" not in rows[0]  # original untouched
+
+
+# ── _normalize_for_compare ────────────────────────────────────────────────────
+
+def test_normalize_basic():
+    forms = _normalize_for_compare("Lightning Bolt")
+    assert "lightning bolt" in forms
+
+
+def test_normalize_strips_parenthetical():
+    forms = _normalize_for_compare("Foo (DVD)")
+    assert "foo" in forms
+    assert "foo (dvd)" not in forms
+
+
+def test_normalize_split_card():
+    forms = _normalize_for_compare("Find // Finality")
+    assert "find // finality" in forms
+    assert "find" in forms           # first face extracted
+
+
+def test_normalize_sld_dash():
+    forms = _normalize_for_compare("Miku, Font of Pop - Giada, Font of Hope (Rainbow Foil)")
+    # post-dash portion stripped of its trailing paren
+    assert "giada, font of hope" in forms
+
+
+def test_normalize_diacritic():
+    forms = _normalize_for_compare("Arna Kennerüd, Skycaptain")
+    assert "arna kennerud, skycaptain" in forms   # ü → u via NFKD + ASCII encode
+
+
+def test_verify_match_split_card():
+    # sbwsz returns face name "Find"; row has "Find // Finality" — must match
+    assert _normalize_for_compare("Find // Finality") & _normalize_for_compare("Find")
+
+
+def test_verify_match_sld_dash():
+    # sbwsz returns "Giada, Font of Hope"; row has the full product-name prefix
+    row_name = "Miku, Font of Pop - Giada, Font of Hope (Rainbow Foil)"
+    assert _normalize_for_compare(row_name) & _normalize_for_compare("Giada, Font of Hope")
+
+
+def test_verify_match_diacritic():
+    # TCGPlayer: "Arna Kennerud"; sbwsz: "Arna Kennerüd" — must match
+    assert _normalize_for_compare("Arna Kennerud, Skycaptain") & _normalize_for_compare("Arna Kennerüd, Skycaptain")
+
+
+def test_verify_reject_wrong_card():
+    # "Strike It Rich (Retro Frame)" vs sbwsz "Esper Sentinel" — must NOT match
+    assert not (_normalize_for_compare("Strike It Rich (Retro Frame)") & _normalize_for_compare("Esper Sentinel"))
+
+
+def test_verify_reject_completely_different():
+    assert not (_normalize_for_compare("Lightning Bolt") & _normalize_for_compare("Counterspell"))
