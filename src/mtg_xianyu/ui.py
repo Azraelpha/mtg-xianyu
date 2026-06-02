@@ -31,14 +31,6 @@ def effective_cny(row: dict) -> float:
     return 0.0
 
 
-def price_source_label(row: dict) -> str:
-    """Human-readable caption for where the displayed price came from."""
-    if row.get("jihuanshe_price_cny") is not None:
-        return f"JHS ¥{row['jihuanshe_price_cny']:.2f}"
-    if row.get("usd_market") is not None:
-        return f"USD {row['usd_market']:.2f} × {FX_RATE} = ¥{row['usd_market'] * FX_RATE:.2f}"
-    return "no price data"
-
 
 def sort_rows(rows: list[dict], sort_by: str) -> list[dict]:
     """Return a new sorted list; does not mutate input."""
@@ -75,6 +67,7 @@ def _render_app() -> None:
             ["Effective CNY", "USD market"],
             key="sort_radio",
         )
+        st.caption("Changes review order, not displayed prices.")
         st.checkbox(
             "Show all rows",
             value=False,
@@ -104,8 +97,9 @@ def _render_app() -> None:
     row = rows[idx]
 
     # ── top bar ───────────────────────────────────────────────────────────────
+    row_id    = row.get("row_id", str(idx))
     name_en   = row.get("name_en", "?")
-    name_zh   = row.get("name_zh") or "—"
+    name_zh   = row.get("name_zh") or "?"
     set_en    = row.get("set_name_en", "?")
     set_zh    = row.get("set_name_zh") or ""
     cn        = row.get("collector_number", "?")
@@ -115,12 +109,7 @@ def _render_app() -> None:
     foil_badge = "✨ Foil" if printing == "Foil" else "Normal"
     set_label  = f"{set_en} / {set_zh}" if set_zh else set_en
 
-    col_en, col_zh = st.columns([3, 1])
-    col_en.markdown(f"## {name_en}")
-    col_zh.markdown(
-        f"<div style='text-align:right; padding-top:0.6em; font-size:1.4em'>{name_zh}</div>",
-        unsafe_allow_html=True,
-    )
+    st.markdown(f"## {name_en} — {name_zh}")
     st.caption(f"{set_label} · #{cn} · {condition} · {foil_badge} · {rarity}")
     st.divider()
 
@@ -150,12 +139,54 @@ def _render_app() -> None:
         )
 
     with right:
-        st.markdown("**Chinese name**")
-        st.markdown(f"### {name_zh}")
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown("**Price (CNY)**")
-        st.markdown(f"### ¥ {effective_cny(row):.2f}")
-        st.caption(price_source_label(row))
+        # ── editable Chinese name ─────────────────────────────────────────────
+        st.text_input(
+            "Chinese name (edit if wrong)",
+            value=row.get("name_zh") or "",
+            key=f"name_zh_{row_id}",
+        )
+
+        st.markdown("---")
+
+        # ── dual price display ────────────────────────────────────────────────
+        jhs = row.get("jihuanshe_price_cny")
+        usd = row.get("usd_market")
+
+        jhs_col, usd_col = st.columns(2)
+
+        with jhs_col:
+            st.markdown("**Jihuanshe (CNY)**")
+            if jhs is not None:
+                st.markdown(f"### ¥ {jhs:.2f}")
+                st.caption("source: sbwsz")
+            else:
+                st.markdown("### N/A")
+                st.caption("not in sbwsz")
+            if st.button("Use this ✓", key=f"use_jhs_{row_id}",
+                         disabled=(jhs is None), use_container_width=True):
+                st.toast("Price selection wired in Stage 5")
+
+        with usd_col:
+            st.markdown("**USD market**")
+            if usd is not None:
+                st.markdown(f"### ${usd:.2f}")
+                st.caption(f"× {FX_RATE} = ¥ {usd * FX_RATE:.2f}")
+            else:
+                st.markdown("### N/A")
+                st.caption("no USD price")
+            if st.button("Use this ✓", key=f"use_usd_{row_id}",
+                         disabled=(usd is None), use_container_width=True):
+                st.toast("Price selection wired in Stage 5")
+
+        st.markdown("---")
+
+        # ── manual override ───────────────────────────────────────────────────
+        st.text_input(
+            "Manual override (CNY)",
+            value="",
+            key=f"price_override_{row_id}",
+            placeholder="Enter CNY amount if neither above is right",
+        )
 
 
 if __name__ == "__main__":
