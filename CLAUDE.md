@@ -175,11 +175,13 @@ re-runnable.
 _To be filled in as scripts land. Tentative:_
 
 ```bash
-uv run python -m mtg_xianyu.parse    data/collection.numbers
-uv run python -m mtg_xianyu.enrich   data/rows.json
-uv run python -m mtg_xianyu.match    data/enriched.json data/photos/
-uv run python -m mtg_xianyu.price    data/matched.json
-uv run python -m mtg_xianyu.describe data/priced.json
+uv run mtg-parse   data/collection.csv       # → data/rows.json
+uv run mtg-enrich  data/rows.json            # → data/enriched.json
+uv run mtg-match   data/enriched.json data/mtg_photos/   # → data/matched.json
+uv run mtg-price   data/matched.json         # → data/priced.json
+uv run mtg-describe data/priced.json         # → data/listings.json
+
+# Review UI — must be run from project root (data/ paths are relative)
 uv run streamlit run src/mtg_xianyu/ui.py
 ```
 
