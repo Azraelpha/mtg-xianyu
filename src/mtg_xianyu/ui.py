@@ -99,6 +99,7 @@ def _on_name_change(row_id: str) -> None:
     _ensure_row(state, row_id)
     state["rows"][row_id]["name_zh_override"] = val if val else None
     _save_state(state)
+    st.rerun()
 
 
 def _on_price_override_change(row_id: str) -> None:
@@ -115,6 +116,7 @@ def _on_price_override_change(row_id: str) -> None:
         state["rows"][row_id]["price_cny"] = None
         state["rows"][row_id]["price_source"] = None
     _save_state(state)
+    st.rerun()
 
 
 # ── data loading ──────────────────────────────────────────────────────────────
@@ -294,6 +296,7 @@ def _render_app() -> None:
             if st.button(jhs_btn, key=f"use_jhs_{row_id}",
                          disabled=(jhs is None), use_container_width=True):
                 _set_row_state(state, row_id, price_cny=jhs, price_source="jhs")
+                st.rerun()
 
         with usd_col:
             usd_active = price_source == "usd_converted"
@@ -309,6 +312,7 @@ def _render_app() -> None:
                          disabled=(usd is None), use_container_width=True):
                 _set_row_state(state, row_id, price_cny=round(usd * FX_RATE, 2),
                                price_source="usd_converted")
+                st.rerun()
 
         st.markdown("---")
 
