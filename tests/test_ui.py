@@ -1,4 +1,4 @@
-from mtg_xianyu.ui import FX_RATE, effective_cny, sort_rows
+from mtg_xianyu.ui import FX_RATE, _approval_hints, effective_cny, sort_rows
 
 
 # ── effective_cny ─────────────────────────────────────────────────────────────
@@ -57,6 +57,98 @@ def test_sort_rows_does_not_mutate_input():
     original_order = [r["jihuanshe_price_cny"] for r in rows]
     sort_rows(rows, "Effective CNY")
     assert [r["jihuanshe_price_cny"] for r in rows] == original_order
+
+
+# ── _approval_hints ───────────────────────────────────────────────────────────
+
+def test_approval_hint_blocking_no_price_no_default():
+    # No JHS, no USD, no explicit price → price warning only.
+    row = {"name_zh": "御用密令", "jihuanshe_price_cny": None, "usd_market": None}
+    entry = {"price_cny": None, "name_zh_override": None}
+    hints = _approval_hints(row, entry)
+    assert len(hints) == 1
+    msg, level = hints[0]
+    assert level == "warning"
+    assert "price" in msg.lower()
+
+
+def test_approval_hint_blocking_no_name():
+    # name_zh null, no override → name warning only.
+    row = {"name_zh": None, "jihuanshe_price_cny": None, "usd_market": None}
+    entry = {"price_cny": 15.0, "name_zh_override": None}
+    hints = _approval_hints(row, entry)
+    assert len(hints) == 1
+    msg, level = hints[0]
+    assert level == "warning"
+    assert "chinese name" in msg.lower()
+
+
+def test_approval_hint_default_jhs():
+    # JHS available, price_cny not yet set → info hint citing the JHS value.
+    row = {"name_zh": "御用密令", "jihuanshe_price_cny": 25.50, "usd_market": 10.0}
+    entry = {"price_cny": None, "name_zh_override": None}
+    hints = _approval_hints(row, entry)
+    assert len(hints) == 1
+    msg, level = hints[0]
+    assert level == "info"
+    assert "25.50" in msg
+    assert "JHS" in msg
+
+
+def test_approval_hint_default_usd_only():
+    # No JHS, USD present, price_cny not set → info hint citing USD-converted value.
+    usd = 10.0
+    row = {"name_zh": "御用密令", "jihuanshe_price_cny": None, "usd_market": usd}
+    entry = {"price_cny": None, "name_zh_override": None}
+    hints = _approval_hints(row, entry)
+    assert len(hints) == 1
+    msg, level = hints[0]
+    assert level == "info"
+    expected = f"{usd * FX_RATE:.2f}"
+    assert expected in msg
+    assert "USD" in msg
+
+
+def test_approval_hint_explicit_price():
+    # User set price_cny, name_zh present → ready to approve.
+    row = {"name_zh": "御用密令", "jihuanshe_price_cny": 25.0, "usd_market": 10.0}
+    entry = {"price_cny": 22.0, "name_zh_override": None}
+    hints = _approval_hints(row, entry)
+    assert len(hints) == 1
+    _, level = hints[0]
+    assert level == "success"
+
+
+def test_approval_hint_override_name():
+    # name_zh null but name_zh_override set → name condition satisfied.
+    row = {"name_zh": None, "jihuanshe_price_cny": None, "usd_market": None}
+    entry = {"price_cny": 15.0, "name_zh_override": "御用密令"}
+    hints = _approval_hints(row, entry)
+    assert len(hints) == 1
+    _, level = hints[0]
+    assert level == "success"
+
+
+def test_approval_hint_explicit_zero_price():
+    # price_cny=0.0 is a valid explicit choice (user typed 0), not absent.
+    row = {"name_zh": "御用密令", "jihuanshe_price_cny": None, "usd_market": None}
+    entry = {"price_cny": 0.0, "name_zh_override": None}
+    hints = _approval_hints(row, entry)
+    assert len(hints) == 1
+    _, level = hints[0]
+    assert level == "success"
+
+
+def test_approval_hint_all_blocking():
+    # Both price and name missing → both warnings surfaced, not just the first.
+    row = {"name_zh": None, "jihuanshe_price_cny": None, "usd_market": None}
+    entry = {"price_cny": None, "name_zh_override": None}
+    hints = _approval_hints(row, entry)
+    levels = [level for _, level in hints]
+    messages = [msg for msg, _ in hints]
+    assert levels.count("warning") == 2
+    assert any("price" in m.lower() for m in messages)
+    assert any("chinese name" in m.lower() for m in messages)
 
 
 def test_sort_rows_jhs_beats_usd_fallback():
