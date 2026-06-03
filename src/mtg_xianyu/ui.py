@@ -9,13 +9,27 @@ Run with:
 Must be run from the project root so that relative data/ paths resolve.
 """
 
+import io
 import json
 from pathlib import Path
 
+from PIL import Image
+from pillow_heif import register_heif_opener
 import streamlit as st
+
+register_heif_opener()  # enable HEIC support for PIL.Image.open()
 
 FX_RATE = 7.25          # CNY per USD — placeholder, tune after first sales
 STATE_PATH = Path("data/listings/state.json")
+PHOTO_DIR = Path("data/mtg_photos")
+THUMBNAILS_PER_PAGE = 12
+THUMBNAIL_COLS = 4
+
+_PHOTO_EXTS = (
+    "*.HEIC", "*.heic",
+    "*.jpg", "*.jpeg", "*.JPG", "*.JPEG",
+    "*.png", "*.PNG",
+)
 
 
 # ── pure helpers (testable without Streamlit) ─────────────────────────────────
@@ -91,6 +105,104 @@ def _set_row_state(state: dict, row_id: str, **fields) -> None:
     _save_state(state)
 
 
+# ── photo pool ────────────────────────────────────────────────────────────────
+
+def _scan_photos() -> list[Path]:
+    """Return all photo files in PHOTO_DIR sorted by filename."""
+    if not PHOTO_DIR.exists():
+        return []
+    photos: set[Path] = set()
+    for ext in _PHOTO_EXTS:
+        photos.update(PHOTO_DIR.rglob(ext))
+    return sorted(photos, key=lambda p: p.name)
+
+
+def _build_unbound_pool(state: dict) -> list[Path]:
+    """Return photos not yet bound to any row."""
+    bound = {
+        Path(r["photo_path"])
+        for r in state.get("rows", {}).values()
+        if r.get("photo_path")
+    }
+    return [p for p in _scan_photos() if p not in bound]
+
+
+def _refresh_pool(state: dict) -> None:
+    """Re-scan photos and rebuild the unbound pool."""
+    st.session_state.unbound_pool = _build_unbound_pool(state)
+    st.session_state.thumbnail_page = 0
+
+
+# ── photo bind / unbind ───────────────────────────────────────────────────────
+
+def _bind_photo(row_id: str, photo_path: Path, state: dict) -> None:
+    """Bind photo_path to row_id; return any previously-bound photo to the pool."""
+    row_entry = state.get("rows", {}).get(row_id, {})
+    old_photo_str = row_entry.get("photo_path")
+
+    # Persist new binding
+    _ensure_row(state, row_id)
+    state["rows"][row_id]["photo_path"] = str(photo_path)
+    state["rows"][row_id]["state"] = "ready_to_review"
+    _save_state(state)
+
+    # Update pool: remove new, add back old (if different from new)
+    pool = [p for p in st.session_state.unbound_pool if p != photo_path]
+    if old_photo_str:
+        old_path = Path(old_photo_str)
+        if old_path != photo_path and old_path not in pool:
+            pool.append(old_path)
+            pool = sorted(pool, key=lambda p: p.name)
+    st.session_state.unbound_pool = pool
+
+    # Invalidate display_rows so the filter re-evaluates this row's new state
+    st.session_state.pop("display_rows", None)
+    st.rerun()
+
+
+def _unbind_photo(row_id: str, state: dict) -> None:
+    """Unbind current photo; return it to pool. Preserves name/price edits."""
+    row_entry = state.get("rows", {}).get(row_id, {})
+    old_photo_str = row_entry.get("photo_path")
+
+    _ensure_row(state, row_id)
+    state["rows"][row_id]["photo_path"] = None
+    state["rows"][row_id]["state"] = "waiting_photo"
+    _save_state(state)
+
+    if old_photo_str:
+        old_path = Path(old_photo_str)
+        pool = st.session_state.unbound_pool
+        if old_path not in pool:
+            pool = sorted(pool + [old_path], key=lambda p: p.name)
+            st.session_state.unbound_pool = pool
+
+    st.session_state.pop("display_rows", None)
+    st.rerun()
+
+
+# ── image loading (cached to avoid reloading on every rerun) ──────────────────
+
+@st.cache_data
+def _load_thumbnail(path_str: str) -> bytes:
+    img = Image.open(path_str)
+    img.thumbnail((150, 300))
+    img = img.convert("RGB")
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=80)
+    return buf.getvalue()
+
+
+@st.cache_data
+def _load_display_image(path_str: str) -> bytes:
+    img = Image.open(path_str)
+    img.thumbnail((800, 1200))
+    img = img.convert("RGB")
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=92)
+    return buf.getvalue()
+
+
 # ── on_change callbacks ───────────────────────────────────────────────────────
 
 def _on_name_change(row_id: str) -> None:
@@ -129,6 +241,45 @@ def _load_enriched() -> list[dict]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+# ── approval readiness ───────────────────────────────────────────────────────
+
+def _approval_hints(row: dict, row_entry: dict) -> list[tuple[str, str]]:
+    """Return (message, level) pairs summarising what's left before approval.
+
+    level is 'warning', 'info', or 'success'.  Only meaningful for
+    ready_to_review rows; callers gate on that state.
+    """
+    hints: list[tuple[str, str]] = []
+
+    price_cny = row_entry.get("price_cny")
+    jhs = row.get("jihuanshe_price_cny")
+    usd = row.get("usd_market")
+
+    if price_cny is None:
+        if jhs is not None:
+            hints.append((
+                f"✓ Price will default to JHS ¥{jhs:.2f} (or click Use this to confirm)",
+                "info",
+            ))
+        elif usd is not None:
+            hints.append((
+                f"✓ Price will default to USD × FX ¥{usd * FX_RATE:.2f}"
+                " (or click Use this to confirm)",
+                "info",
+            ))
+        else:
+            hints.append(("⚠ Set a price before approving", "warning"))
+
+    name_zh_override = row_entry.get("name_zh_override") or ""
+    if not name_zh_override and not row.get("name_zh"):
+        hints.append(("⚠ Add a Chinese name before approving", "warning"))
+
+    if not hints:
+        hints.append(("✓ Ready to approve", "success"))
+
+    return hints
+
+
 # ── UI ────────────────────────────────────────────────────────────────────────
 
 def _render_app() -> None:
@@ -149,6 +300,10 @@ def _render_app() -> None:
         )
         st.caption("Changes review order, not displayed prices.")
         show_all = st.checkbox("Show all rows", key="show_all")
+        st.divider()
+        if st.button("↻ Refresh photo pool", use_container_width=True):
+            _refresh_pool(st.session_state.state if "state" in st.session_state else _load_state())
+            st.rerun()
 
     # ── load enriched data ────────────────────────────────────────────────────
     all_rows = _load_enriched()
@@ -165,12 +320,18 @@ def _render_app() -> None:
 
     state = st.session_state.state
 
-    # ── rebuild display list on sort or filter change ─────────────────────────
-    needs_rebuild = (
-        "display_rows" not in st.session_state
-        or st.session_state.get("_applied_sort") != sort_by
-        or st.session_state.get("_applied_show_all") != show_all
-    )
+    # ── init photo pool (once per session) ───────────────────────────────────
+    if "unbound_pool" not in st.session_state:
+        st.session_state.unbound_pool = _build_unbound_pool(state)
+        st.session_state.thumbnail_page = 0
+
+    # ── rebuild display list ──────────────────────────────────────────────────
+    # Rebuild when sort/filter changes (→ reset index) OR when a bind/unbind
+    # invalidated the cache (→ preserve index).
+    sort_changed = st.session_state.get("_applied_sort") != sort_by
+    filter_changed = st.session_state.get("_applied_show_all") != show_all
+    needs_rebuild = "display_rows" not in st.session_state or sort_changed or filter_changed
+
     if needs_rebuild:
         sorted_all = sort_rows(all_rows, sort_by)
         if show_all:
@@ -183,7 +344,8 @@ def _render_app() -> None:
         st.session_state.display_rows = display_rows
         st.session_state._applied_sort = sort_by
         st.session_state._applied_show_all = show_all
-        st.session_state.current_idx = 0
+        if sort_changed or filter_changed:
+            st.session_state.current_idx = 0
 
     if "current_idx" not in st.session_state:
         st.session_state.current_idx = 0
@@ -212,6 +374,7 @@ def _render_app() -> None:
     # Row-level state
     row_entry = state.get("rows", {}).get(row_id, {})
     price_source = row_entry.get("price_source")
+    bound_photo = row_entry.get("photo_path")
 
     # Pre-populate widget session-state from disk (survives page refresh)
     name_key = f"name_zh_{row_id}"
@@ -226,7 +389,6 @@ def _render_app() -> None:
 
     # ── top bar ───────────────────────────────────────────────────────────────
     name_en   = row.get("name_en", "?")
-    # Header reflects any in-session or persisted name override
     name_zh   = st.session_state.get(name_key) or row.get("name_zh") or "?"
     set_en    = row.get("set_name_en", "?")
     set_zh    = row.get("set_name_zh") or ""
@@ -258,13 +420,27 @@ def _render_app() -> None:
                 st.rerun()
 
         st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown(
-            "<div style='height:320px; background:#f5f5f5; border-radius:8px;"
-            " display:flex; align-items:center; justify-content:center;"
-            " color:#aaa; font-size:1.1em; border:1px dashed #ccc'>"
-            "📷 Photo binding — Stage 4</div>",
-            unsafe_allow_html=True,
-        )
+
+        # ── bound photo or placeholder ────────────────────────────────────────
+        if bound_photo and Path(bound_photo).exists():
+            try:
+                st.image(_load_display_image(bound_photo), width=400)
+            except Exception as exc:
+                st.warning(f"Cannot open {Path(bound_photo).name}: {exc}")
+            if st.button("✕ Unbind", key=f"unbind_{row_id}"):
+                _unbind_photo(row_id, state)
+        elif bound_photo:
+            st.warning(f"Photo file missing: {Path(bound_photo).name}")
+            if st.button("✕ Unbind (file missing)", key=f"unbind_{row_id}"):
+                _unbind_photo(row_id, state)
+        else:
+            st.markdown(
+                "<div style='height:320px; background:#f5f5f5; border-radius:8px;"
+                " display:flex; align-items:center; justify-content:center;"
+                " color:#aaa; font-size:1.1em; border:1px dashed #ccc'>"
+                "📷 Click a thumbnail below to bind a photo</div>",
+                unsafe_allow_html=True,
+            )
 
     with right:
         # ── editable Chinese name ─────────────────────────────────────────────
@@ -325,6 +501,58 @@ def _render_app() -> None:
             on_change=_on_price_override_change,
             args=(row_id,),
         )
+
+        # ── approval readiness hint ───────────────────────────────────────────
+        if row_entry.get("state") == "ready_to_review":
+            st.markdown("---")
+            for msg, level in _approval_hints(row, row_entry):
+                if level == "warning":
+                    st.markdown(
+                        f"<small style='color:#c05000'>{msg}</small>",
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    st.caption(msg)
+
+    # ── thumbnail grid (full width) ───────────────────────────────────────────
+    st.divider()
+    pool = st.session_state.unbound_pool
+    st.markdown(f"**Unbound photos (pool: {len(pool)})**")
+
+    if not pool:
+        st.caption("No unbound photos. Add photos to data/mtg_photos/ and click ↻ Refresh.")
+    else:
+        page = st.session_state.get("thumbnail_page", 0)
+        total_pages = max(1, (len(pool) + THUMBNAILS_PER_PAGE - 1) // THUMBNAILS_PER_PAGE)
+        page = min(page, total_pages - 1)
+        st.session_state.thumbnail_page = page
+
+        start = page * THUMBNAILS_PER_PAGE
+        visible = pool[start : start + THUMBNAILS_PER_PAGE]
+
+        cols = st.columns(THUMBNAIL_COLS)
+        for i, photo_path in enumerate(visible):
+            with cols[i % THUMBNAIL_COLS]:
+                try:
+                    st.image(_load_thumbnail(str(photo_path)), width=150)
+                except Exception:
+                    st.markdown("⚠️ unreadable")
+                st.caption(photo_path.name)
+                if st.button("Bind ✓", key=f"bind_{photo_path.name}",
+                             use_container_width=True):
+                    _bind_photo(row_id, photo_path, state)
+
+        # Pagination
+        pg_prev, pg_next = st.columns(2)
+        with pg_prev:
+            if st.button("< Prev page", disabled=(page == 0), use_container_width=True):
+                st.session_state.thumbnail_page = page - 1
+                st.rerun()
+        with pg_next:
+            if st.button("Next page >", disabled=(page >= total_pages - 1),
+                         use_container_width=True):
+                st.session_state.thumbnail_page = page + 1
+                st.rerun()
 
 
 if __name__ == "__main__":
