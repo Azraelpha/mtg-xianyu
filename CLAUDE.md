@@ -193,6 +193,28 @@ uv run mtg-describe data/priced.json         # → data/listings.json
 uv run streamlit run src/mtg_xianyu/ui.py
 ```
 
+## Operations
+
+### Re-approving a row
+
+Approval is terminal in v1 — the UI has no re-approve button. To redo
+an approved row manually:
+
+1. Delete `data/listings/{row_id}.json` and `data/listings/{row_id}.jpg`.
+2. Edit `data/listings/state.json`: find the row entry and change
+   `"state": "approved"` back to `"ready_to_review"`, clear
+   `"approved_at"` to `null`. Leave `photo_path`, `name_zh_override`,
+   and `price_cny`/`price_source` in place (they'll re-populate the
+   UI fields when the row re-opens).
+3. Restart the UI (or it will pick up the state change on the next
+   page render).
+
+### Photo directory changes between sessions
+
+If photos are added, moved, or deleted between UI sessions, click
+**↻ Refresh photo pool** in the sidebar to rescan. The pool is
+built once per session on startup; it does not auto-refresh.
+
 ## Open decisions
 
 - Calibration of USD and Jihuanshe price multipliers (tune empirically after

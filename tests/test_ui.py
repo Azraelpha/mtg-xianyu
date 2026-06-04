@@ -1,4 +1,12 @@
-from mtg_xianyu.ui import FX_RATE, _approval_hints, effective_cny, sort_rows
+from mtg_xianyu.ui import (
+    FX_RATE,
+    _approval_hints,
+    _build_listing,
+    _next_unfinished_idx,
+    _resolve_final_price_and_source,
+    effective_cny,
+    sort_rows,
+)
 
 
 # ── effective_cny ─────────────────────────────────────────────────────────────
@@ -149,6 +157,121 @@ def test_approval_hint_all_blocking():
     assert levels.count("warning") == 2
     assert any("price" in m.lower() for m in messages)
     assert any("chinese name" in m.lower() for m in messages)
+
+
+# ── _resolve_final_price_and_source ──────────────────────────────────────────
+
+def test_price_source_inference_explicit_manual():
+    row = {"jihuanshe_price_cny": 100.0, "usd_market": 20.0}
+    state_row = {"price_cny": 88.0, "price_source": "manual"}
+    price, source = _resolve_final_price_and_source(row, state_row, FX_RATE)
+    assert price == 88.0
+    assert source == "manual"
+
+
+def test_price_source_inference_default_jhs():
+    # No explicit choice → falls back to JHS when available.
+    row = {"jihuanshe_price_cny": 100.0, "usd_market": 20.0}
+    state_row = {"price_cny": None, "price_source": None}
+    price, source = _resolve_final_price_and_source(row, state_row, FX_RATE)
+    assert price == 100.0
+    assert source == "jhs"
+
+
+def test_price_source_inference_default_usd():
+    # No JHS, no explicit choice → USD-converted.
+    row = {"jihuanshe_price_cny": None, "usd_market": 10.0}
+    state_row = {"price_cny": None, "price_source": None}
+    price, source = _resolve_final_price_and_source(row, state_row, FX_RATE)
+    assert abs(price - round(10.0 * FX_RATE, 2)) < 0.001
+    assert source == "usd_converted"
+
+
+# ── _build_listing ────────────────────────────────────────────────────────────
+
+def test_approve_listing_shape():
+    row = {
+        "row_id": "534045_0",
+        "product_id": 534045,
+        "name_en": "Imperial Seal (Borderless)",
+        "name_zh": "玉玺",
+        "set_code": "2X2",
+        "set_name_en": "Double Masters 2022",
+        "set_name_zh": "双星大师2022",
+        "collector_number": "354",
+        "condition": "Near Mint",
+        "printing": "Normal",
+        "rarity": "Mythic",
+        "jihuanshe_price_cny": 1155.91,
+        "usd_market": 167.87,
+    }
+    state_row = {
+        "photo_path": "data/mtg_photos/IMG_1234.HEIC",
+        "price_cny": 1155.91,
+        "price_source": "jhs",
+        "name_zh_override": None,
+    }
+    ts = "2026-01-15T10:30:00"
+    listing = _build_listing(row, state_row, 7.25, ts)
+
+    assert listing["row_id"] == "534045_0"
+    assert listing["product_id"] == 534045
+    assert listing["name_en"] == "Imperial Seal (Borderless)"
+    assert listing["name_zh"] == "玉玺"
+    assert listing["set_code"] == "2X2"
+    assert listing["collector_number"] == "354"
+    assert listing["condition"] == "Near Mint"
+    assert listing["printing"] == "Normal"
+    assert listing["price_cny"] == 1155.91
+    assert listing["price_source"] == "jhs"
+    assert listing["fx_rate_at_approval"] == 7.25
+    assert listing["photo_jpg"] == "data/listings/534045_0.jpg"
+    assert listing["photo_heic_source"] == "data/mtg_photos/IMG_1234.HEIC"
+    assert listing["approved_at"] == ts
+    # All spec-required keys present
+    required = {
+        "row_id", "product_id", "name_en", "name_zh", "set_code",
+        "set_name_en", "set_name_zh", "collector_number", "condition",
+        "printing", "rarity", "jihuanshe_price_cny", "usd_market",
+        "price_cny", "price_source", "fx_rate_at_approval",
+        "photo_jpg", "photo_heic_source", "approved_at",
+    }
+    assert required.issubset(listing.keys())
+
+
+def test_approve_listing_uses_name_override():
+    row = {"row_id": "r0", "name_zh": "原始名称", "jihuanshe_price_cny": 50.0,
+           "usd_market": None}
+    state_row = {"photo_path": "p.heic", "price_cny": 50.0, "price_source": "jhs",
+                 "name_zh_override": "覆盖名称"}
+    listing = _build_listing(row, state_row, FX_RATE, "2026-01-01T00:00:00")
+    assert listing["name_zh"] == "覆盖名称"
+
+
+# ── _next_unfinished_idx ──────────────────────────────────────────────────────
+
+def test_next_unfinished_row():
+    rows = [
+        {"row_id": "r0"},
+        {"row_id": "r1"},
+        {"row_id": "r2"},
+        {"row_id": "r3"},
+    ]
+    state = {"rows": {
+        "r0": {"state": "approved"},
+        "r1": {"state": "ready_to_review"},
+        "r2": {"state": "approved"},
+        "r3": {"state": "ready_to_review"},
+    }}
+    assert _next_unfinished_idx(rows, state, 0) == 1   # r1 is next
+    assert _next_unfinished_idx(rows, state, 1) == 3   # r3 is next after r1
+    assert _next_unfinished_idx(rows, state, 3) is None  # nothing after r3
+
+
+def test_next_unfinished_row_returns_none_when_all_approved():
+    rows = [{"row_id": "r0"}, {"row_id": "r1"}]
+    state = {"rows": {"r0": {"state": "approved"}, "r1": {"state": "approved"}}}
+    assert _next_unfinished_idx(rows, state, 0) is None
 
 
 def test_sort_rows_jhs_beats_usd_fallback():

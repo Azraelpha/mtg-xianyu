@@ -11,6 +11,7 @@ Must be run from the project root so that relative data/ paths resolve.
 
 import io
 import json
+from datetime import datetime
 from pathlib import Path
 
 from PIL import Image
@@ -20,7 +21,8 @@ import streamlit as st
 register_heif_opener()  # enable HEIC support for PIL.Image.open()
 
 FX_RATE = 7.25          # CNY per USD — placeholder, tune after first sales
-STATE_PATH = Path("data/listings/state.json")
+LISTINGS_DIR = Path("data/listings")
+STATE_PATH = LISTINGS_DIR / "state.json"
 PHOTO_DIR = Path("data/mtg_photos")
 THUMBNAILS_PER_PAGE = 12
 THUMBNAIL_COLS = 4
@@ -280,6 +282,93 @@ def _approval_hints(row: dict, row_entry: dict) -> list[tuple[str, str]]:
     return hints
 
 
+# ── approve / skip actions ───────────────────────────────────────────────────
+
+def _resolve_final_price_and_source(
+    row: dict, state_row: dict, fx_rate: float
+) -> tuple[float, str]:
+    """Return (price_cny, price_source) for the approval listing.
+
+    Precedence: explicit state (manual/jhs/usd) → JHS default → USD default.
+    Raises ValueError only if no price is available at all (should be
+    unreachable when Approve is enabled, since the hint blocks it).
+    """
+    if state_row.get("price_source") is not None:
+        return state_row["price_cny"], state_row["price_source"]
+    jhs = row.get("jihuanshe_price_cny")
+    if jhs is not None:
+        return jhs, "jhs"
+    usd = row.get("usd_market")
+    if usd is not None:
+        return round(usd * fx_rate, 2), "usd_converted"
+    raise ValueError(f"No price available for row {row.get('row_id')}")
+
+
+def _build_listing(row: dict, state_row: dict, fx_rate: float, ts: str) -> dict:
+    """Assemble the listing dict written to data/listings/{row_id}.json."""
+    row_id = row["row_id"]
+    final_price, final_source = _resolve_final_price_and_source(row, state_row, fx_rate)
+    return {
+        "row_id": row_id,
+        "product_id": row.get("product_id"),
+        "name_en": row.get("name_en"),
+        "name_zh": state_row.get("name_zh_override") or row.get("name_zh"),
+        "set_code": row.get("set_code"),
+        "set_name_en": row.get("set_name_en"),
+        "set_name_zh": row.get("set_name_zh"),
+        "collector_number": row.get("collector_number"),
+        "condition": row.get("condition"),
+        "printing": row.get("printing"),
+        "rarity": row.get("rarity"),
+        "jihuanshe_price_cny": row.get("jihuanshe_price_cny"),
+        "usd_market": row.get("usd_market"),
+        "price_cny": final_price,
+        "price_source": final_source,
+        "fx_rate_at_approval": fx_rate,
+        "photo_jpg": str(LISTINGS_DIR / f"{row_id}.jpg"),
+        "photo_heic_source": state_row.get("photo_path"),
+        "approved_at": ts,
+    }
+
+
+def _next_unfinished_idx(
+    display_rows: list[dict], state: dict, current_idx: int
+) -> int | None:
+    """Return index of the next ready_to_review row after current_idx, or None."""
+    for i in range(current_idx + 1, len(display_rows)):
+        if _row_state(state, display_rows[i].get("row_id", "")) == "ready_to_review":
+            return i
+    return None
+
+
+def _do_approve(row: dict, row_id: str, state: dict) -> None:
+    """Write JPEG + listing JSON to data/listings/, then mark row approved in state."""
+    row_entry = state["rows"][row_id]
+    ts = datetime.now().isoformat(timespec="seconds")
+    listing = _build_listing(row, row_entry, FX_RATE, ts)
+
+    LISTINGS_DIR.mkdir(parents=True, exist_ok=True)
+
+    # HEIC → JPEG: .convert("RGB") normalises HEIC/alpha/palette to sRGB JPEG.
+    jpg_path = LISTINGS_DIR / f"{row_id}.jpg"
+    Image.open(row_entry["photo_path"]).convert("RGB").save(
+        str(jpg_path), format="JPEG", quality=90, optimize=True
+    )
+
+    (LISTINGS_DIR / f"{row_id}.json").write_text(
+        json.dumps(listing, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+    _ensure_row(state, row_id)
+    state["rows"][row_id].update({
+        "state": "approved",
+        "approved_at": ts,
+        "price_cny": listing["price_cny"],
+        "price_source": listing["price_source"],
+    })
+    _save_state(state)
+
+
 # ── UI ────────────────────────────────────────────────────────────────────────
 
 def _render_app() -> None:
@@ -503,9 +592,17 @@ def _render_app() -> None:
         )
 
         # ── approval readiness hint ───────────────────────────────────────────
-        if row_entry.get("state") == "ready_to_review":
+        current_row_state = row_entry.get("state", "waiting_photo")
+        hints_for_approval = (
+            _approval_hints(row, row_entry)
+            if current_row_state == "ready_to_review"
+            else []
+        )
+        blocking = any(level == "warning" for _, level in hints_for_approval)
+
+        if hints_for_approval:
             st.markdown("---")
-            for msg, level in _approval_hints(row, row_entry):
+            for msg, level in hints_for_approval:
                 if level == "warning":
                     st.markdown(
                         f"<small style='color:#c05000'>{msg}</small>",
@@ -513,6 +610,57 @@ def _render_app() -> None:
                     )
                 else:
                     st.caption(msg)
+
+        # ── action buttons ────────────────────────────────────────────────────
+        st.markdown("---")
+
+        if st.button(
+            "✓ Approve",
+            type="primary",
+            disabled=(current_row_state != "ready_to_review" or blocking),
+            use_container_width=True,
+            key=f"approve_{row_id}",
+        ):
+            _do_approve(row, row_id, state)
+            next_idx = _next_unfinished_idx(display_rows, state, idx)
+            st.session_state.current_idx = next_idx if next_idx is not None else idx
+            st.session_state.pop("display_rows", None)
+            st.rerun()
+
+        if st.button(
+            "→ Skip",
+            disabled=(current_row_state == "approved"),
+            use_container_width=True,
+            key=f"skip_{row_id}",
+        ):
+            _ensure_row(state, row_id)
+            state["rows"][row_id]["state"] = "skipped"
+            _save_state(state)
+            next_idx = _next_unfinished_idx(display_rows, state, idx)
+            st.session_state.current_idx = next_idx if next_idx is not None else idx
+            st.session_state.pop("display_rows", None)
+            st.rerun()
+
+        if st.button(
+            "← Back",
+            disabled=(idx == 0),
+            use_container_width=True,
+            key=f"back_{row_id}",
+        ):
+            st.session_state.current_idx = idx - 1
+            st.rerun()
+
+        # show "all caught up" only when some work is done but nothing left to do
+        ready_count = sum(
+            1 for r in display_rows
+            if _row_state(state, r.get("row_id", "")) == "ready_to_review"
+        )
+        done_count = sum(
+            1 for r in display_rows
+            if _row_state(state, r.get("row_id", "")) in ("approved", "skipped")
+        )
+        if ready_count == 0 and done_count > 0:
+            st.caption("All caught up for now — no more rows ready to review.")
 
     # ── thumbnail grid (full width) ───────────────────────────────────────────
     st.divider()
