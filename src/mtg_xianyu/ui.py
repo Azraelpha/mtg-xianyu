@@ -754,16 +754,25 @@ def _render_app() -> None:
                              use_container_width=True):
                     _bind_photo(row_id, photo_path, state)
 
-        # Pagination
-        pg_prev, pg_next = st.columns(2)
+        # Pagination — four equal-width buttons in one row
+        at_first = page == 0
+        at_last  = page >= total_pages - 1
+        pg_first, pg_prev, pg_next, pg_last = st.columns(4)
+        with pg_first:
+            if st.button("<< First", disabled=at_first, use_container_width=True):
+                st.session_state.thumbnail_page = 0
+                st.rerun()
         with pg_prev:
-            if st.button("< Prev page", disabled=(page == 0), use_container_width=True):
+            if st.button("< Prev", disabled=at_first, use_container_width=True):
                 st.session_state.thumbnail_page = page - 1
                 st.rerun()
         with pg_next:
-            if st.button("Next page >", disabled=(page >= total_pages - 1),
-                         use_container_width=True):
+            if st.button("Next >", disabled=at_last, use_container_width=True):
                 st.session_state.thumbnail_page = page + 1
+                st.rerun()
+        with pg_last:
+            if st.button("Last >>", disabled=at_last, use_container_width=True):
+                st.session_state.thumbnail_page = total_pages - 1
                 st.rerun()
 
 
