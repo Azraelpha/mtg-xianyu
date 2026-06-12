@@ -389,10 +389,6 @@ def _render_app() -> None:
         )
         st.caption("Changes review order, not displayed prices.")
         show_all = st.checkbox("Show all rows", key="show_all")
-        st.divider()
-        if st.button("↻ Refresh photo pool", use_container_width=True):
-            _refresh_pool(st.session_state.state if "state" in st.session_state else _load_state())
-            st.rerun()
 
     # ── load enriched data ────────────────────────────────────────────────────
     all_rows = _load_enriched()
@@ -408,6 +404,18 @@ def _render_app() -> None:
         st.session_state.state = state
 
     state = st.session_state.state
+
+    # ── sidebar progress indicator ────────────────────────────────────────────
+    with st.sidebar:
+        st.divider()
+        _all_states = list(state.get("rows", {}).values())
+        n_approved  = sum(1 for r in _all_states if r.get("state") == "approved")
+        n_skipped   = sum(1 for r in _all_states if r.get("state") == "skipped")
+        n_remaining = len(all_rows) - n_approved - n_skipped
+        st.markdown(
+            f"Progress: **{n_approved}** of {len(all_rows)} approved · "
+            f"**{n_skipped}** skipped · **{n_remaining}** remaining"
+        )
 
     # ── init photo pool (once per session) ───────────────────────────────────
     if "unbound_pool" not in st.session_state:
@@ -488,24 +496,57 @@ def _render_app() -> None:
     foil_badge = "✨ Foil" if printing == "Foil" else "Normal"
     set_label  = f"{set_en} / {set_zh}" if set_zh else set_en
 
-    st.markdown(f"## {name_en} — {name_zh}")
+    st.markdown(f"### {name_en} — {name_zh}")
     st.caption(f"{set_label} · #{cn} · {condition} · {foil_badge} · {rarity}")
     st.divider()
+
+    # ── per-row state (computed once, used in both columns) ──────────────────
+    current_row_state = row_entry.get("state", "waiting_photo")
+    hints_for_approval = (
+        _approval_hints(row, row_entry)
+        if current_row_state in ("ready_to_review", "skipped")
+        else []
+    )
+    blocking = any(level == "warning" for _, level in hints_for_approval)
+    if current_row_state == "skipped":
+        blocking = blocking or not bound_photo  # no photo → can't convert to JPEG
 
     # ── middle row ────────────────────────────────────────────────────────────
     left, right = st.columns([3, 2])
 
     with left:
-        st.caption(f"Row {idx + 1} of {total}")
+        # Row counter + state badge
+        if current_row_state == "approved":
+            badge = ("<span style='background:#d4edda;color:#155724;"
+                     "padding:2px 8px;border-radius:4px;"
+                     "font-size:0.8em;font-weight:bold'>✓ APPROVED</span>")
+        elif current_row_state == "skipped":
+            badge = ("<span style='background:#fff3cd;color:#856404;"
+                     "padding:2px 8px;border-radius:4px;"
+                     "font-size:0.8em;font-weight:bold'>⊘ SKIPPED</span>")
+        elif current_row_state == "ready_to_review":
+            badge = ("<span style='background:#d1ecf1;color:#0c5460;"
+                     "padding:2px 8px;border-radius:4px;"
+                     "font-size:0.8em'>● READY</span>")
+        else:
+            badge = ("<span style='background:#e2e3e5;color:#6c757d;"
+                     "padding:2px 8px;border-radius:4px;"
+                     "font-size:0.8em'>● WAITING PHOTO</span>")
+        st.markdown(
+            f"<small>Row {idx + 1} of {total}</small> {badge}",
+            unsafe_allow_html=True,
+        )
 
         nav_prev, nav_next = st.columns(2)
         with nav_prev:
             if st.button("← Prev", disabled=(idx == 0), use_container_width=True):
                 st.session_state.current_idx = idx - 1
+                st.session_state.pop("_all_caught_up", None)
                 st.rerun()
         with nav_next:
             if st.button("Next →", disabled=(idx == total - 1), use_container_width=True):
                 st.session_state.current_idx = idx + 1
+                st.session_state.pop("_all_caught_up", None)
                 st.rerun()
 
         st.markdown("<br>", unsafe_allow_html=True)
@@ -592,14 +633,6 @@ def _render_app() -> None:
         )
 
         # ── approval readiness hint ───────────────────────────────────────────
-        current_row_state = row_entry.get("state", "waiting_photo")
-        hints_for_approval = (
-            _approval_hints(row, row_entry)
-            if current_row_state == "ready_to_review"
-            else []
-        )
-        blocking = any(level == "warning" for _, level in hints_for_approval)
-
         if hints_for_approval:
             st.markdown("---")
             for msg, level in hints_for_approval:
@@ -614,33 +647,65 @@ def _render_app() -> None:
         # ── action buttons ────────────────────────────────────────────────────
         st.markdown("---")
 
-        if st.button(
-            "✓ Approve",
-            type="primary",
-            disabled=(current_row_state != "ready_to_review" or blocking),
-            use_container_width=True,
-            key=f"approve_{row_id}",
-        ):
-            _do_approve(row, row_id, state)
-            next_idx = _next_unfinished_idx(display_rows, state, idx)
-            st.session_state.current_idx = next_idx if next_idx is not None else idx
-            st.session_state.pop("display_rows", None)
-            st.rerun()
+        # Approve — replaced by muted status on approved rows
+        if current_row_state == "approved":
+            approved_ts = row_entry.get("approved_at", "")
+            approved_date = approved_ts[:10] if approved_ts else "?"
+            st.markdown(
+                f"<span style='color:#2d7d2d'>✓ Approved on {approved_date}</span>",
+                unsafe_allow_html=True,
+            )
+            st.caption("To re-approve, see CLAUDE.md Operations section.")
+        else:
+            approve_disabled = (
+                current_row_state not in ("ready_to_review", "skipped") or blocking
+            )
+            if st.button(
+                "✓ Approve",
+                type="primary",
+                disabled=approve_disabled,
+                use_container_width=True,
+                key=f"approve_{row_id}",
+            ):
+                _do_approve(row, row_id, state)
+                next_idx = _next_unfinished_idx(display_rows, state, idx)
+                if next_idx is not None:
+                    st.session_state.current_idx = next_idx
+                    st.session_state.pop("_all_caught_up", None)
+                else:
+                    st.session_state.current_idx = idx
+                    st.session_state._all_caught_up = True
+                st.session_state.pop("display_rows", None)
+                st.rerun()
 
-        if st.button(
-            "→ Skip",
-            disabled=(current_row_state == "approved"),
-            use_container_width=True,
-            key=f"skip_{row_id}",
-        ):
-            _ensure_row(state, row_id)
-            state["rows"][row_id]["state"] = "skipped"
-            _save_state(state)
-            next_idx = _next_unfinished_idx(display_rows, state, idx)
-            st.session_state.current_idx = next_idx if next_idx is not None else idx
-            st.session_state.pop("display_rows", None)
-            st.rerun()
+        # Skip — muted indicator for already-skipped; hint for waiting_photo; hidden for approved
+        if current_row_state == "skipped":
+            st.markdown(
+                "<span style='color:#a06010'>⊘ Already skipped</span>",
+                unsafe_allow_html=True,
+            )
+        elif current_row_state == "waiting_photo":
+            st.caption("Bind a photo first to enable approval.")
+        elif current_row_state == "ready_to_review":
+            if st.button(
+                "→ Skip",
+                use_container_width=True,
+                key=f"skip_{row_id}",
+            ):
+                _ensure_row(state, row_id)
+                state["rows"][row_id]["state"] = "skipped"
+                _save_state(state)
+                next_idx = _next_unfinished_idx(display_rows, state, idx)
+                if next_idx is not None:
+                    st.session_state.current_idx = next_idx
+                    st.session_state.pop("_all_caught_up", None)
+                else:
+                    st.session_state.current_idx = idx
+                    st.session_state._all_caught_up = True
+                st.session_state.pop("display_rows", None)
+                st.rerun()
 
+        # Back — always present, disabled at first row
         if st.button(
             "← Back",
             disabled=(idx == 0),
@@ -648,27 +713,26 @@ def _render_app() -> None:
             key=f"back_{row_id}",
         ):
             st.session_state.current_idx = idx - 1
+            st.session_state.pop("_all_caught_up", None)
             st.rerun()
 
-        # show "all caught up" only when some work is done but nothing left to do
-        ready_count = sum(
-            1 for r in display_rows
-            if _row_state(state, r.get("row_id", "")) == "ready_to_review"
-        )
-        done_count = sum(
-            1 for r in display_rows
-            if _row_state(state, r.get("row_id", "")) in ("approved", "skipped")
-        )
-        if ready_count == 0 and done_count > 0:
+        # "All caught up" only when auto-advance found no next ready_to_review row
+        if st.session_state.get("_all_caught_up"):
             st.caption("All caught up for now — no more rows ready to review.")
 
     # ── thumbnail grid (full width) ───────────────────────────────────────────
     st.divider()
     pool = st.session_state.unbound_pool
-    st.markdown(f"**Unbound photos (pool: {len(pool)})**")
+    pool_hdr, pool_btn = st.columns([5, 1])
+    with pool_hdr:
+        st.markdown(f"**Unbound photos (pool: {len(pool)})**")
+    with pool_btn:
+        if st.button("↻ Refresh", key="refresh_pool", use_container_width=True):
+            _refresh_pool(state)
+            st.rerun()
 
     if not pool:
-        st.caption("No unbound photos. Add photos to data/mtg_photos/ and click ↻ Refresh.")
+        st.caption("No unbound photos — add photos to data/mtg_photos/ and click ↻ Refresh.")
     else:
         page = st.session_state.get("thumbnail_page", 0)
         total_pages = max(1, (len(pool) + THUMBNAILS_PER_PAGE - 1) // THUMBNAILS_PER_PAGE)
