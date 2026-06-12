@@ -18,6 +18,8 @@ from PIL import Image
 from pillow_heif import register_heif_opener
 import streamlit as st
 
+from mtg_xianyu.describe import build_description
+
 register_heif_opener()  # enable HEIC support for PIL.Image.open()
 
 FX_RATE = 7.25          # CNY per USD — placeholder, tune after first sales
@@ -358,6 +360,9 @@ def _do_approve(row: dict, row_id: str, state: dict) -> None:
     (LISTINGS_DIR / f"{row_id}.json").write_text(
         json.dumps(listing, indent=2, ensure_ascii=False), encoding="utf-8"
     )
+    (LISTINGS_DIR / f"{row_id}.txt").write_text(
+        build_description(listing), encoding="utf-8"
+    )
 
     _ensure_row(state, row_id)
     state["rows"][row_id].update({
@@ -656,6 +661,9 @@ def _render_app() -> None:
                 unsafe_allow_html=True,
             )
             st.caption("To re-approve, see CLAUDE.md Operations section.")
+            txt_path = LISTINGS_DIR / f"{row_id}.txt"
+            if txt_path.exists():
+                st.code(txt_path.read_text(encoding="utf-8"), language=None)
         else:
             approve_disabled = (
                 current_row_state not in ("ready_to_review", "skipped") or blocking

@@ -1,0 +1,168 @@
+import pytest
+
+from mtg_xianyu.describe import (
+    SHOP_POLICY,
+    _classify_and_compose_finish,
+    _extract_suffixes,
+    build_description,
+)
+
+# ── _extract_suffixes ─────────────────────────────────────────────────────────
+
+def test_extract_suffixes_no_suffix():
+    base, suffixes = _extract_suffixes("Lightning Bolt")
+    assert base == "Lightning Bolt"
+    assert suffixes == []
+
+
+def test_extract_suffixes_single():
+    base, suffixes = _extract_suffixes("Imperial Seal (Borderless)")
+    assert base == "Imperial Seal"
+    assert suffixes == ["Borderless"]
+
+
+def test_extract_suffixes_double():
+    base, suffixes = _extract_suffixes("Foo (Borderless) (Foil Etched)")
+    assert base == "Foo"
+    assert suffixes == ["Foil Etched", "Borderless"]   # innermost first
+
+
+# ── _classify_and_compose_finish ─────────────────────────────────────────────
+
+def test_normal_foil():
+    result = _classify_and_compose_finish([], "Foil", "Lightning Bolt")
+    assert result == "英文闪"
+
+
+def test_normal_normal():
+    result = _classify_and_compose_finish([], "Normal", "Lightning Bolt")
+    assert result == "英文平"
+
+
+def test_borderless_foil():
+    result = _classify_and_compose_finish(["Borderless"], "Foil", "Imperial Seal (Borderless)")
+    assert result == "异画英文闪"
+
+
+def test_borderless_normal():
+    result = _classify_and_compose_finish(["Borderless"], "Normal", "Imperial Seal (Borderless)")
+    assert result == "异画英文平"
+
+
+def test_extended_art_foil():
+    result = _classify_and_compose_finish(["Extended Art"], "Foil", "Foo (Extended Art)")
+    assert result == "扩画英文闪"
+
+
+def test_retro_frame_normal():
+    result = _classify_and_compose_finish(["Retro Frame"], "Normal", "Esper Sentinel (Retro Frame)")
+    assert result == "老框英文平"
+
+
+def test_showcase_maps_to_yihua():
+    result = _classify_and_compose_finish(["Showcase"], "Foil", "Foo (Showcase)")
+    assert result == "异画英文闪"
+
+
+def test_foil_etched():
+    result = _classify_and_compose_finish(["Foil Etched"], "Foil", "Foo (Foil Etched)")
+    assert result == "英文蚀刻闪"
+
+
+def test_rainbow_foil():
+    result = _classify_and_compose_finish(["Rainbow Foil"], "Foil", "Foo (Rainbow Foil)")
+    assert result == "英文彩虹闪"
+
+
+def test_surge_foil():
+    result = _classify_and_compose_finish(["Surge Foil"], "Foil", "Foo (Surge Foil)")
+    assert result == "英文潮涌闪"
+
+
+def test_borderless_and_foil_etched():
+    # innermost suffix is "Foil Etched", outermost is "Borderless"
+    suffixes = ["Foil Etched", "Borderless"]
+    result = _classify_and_compose_finish(suffixes, "Foil", "Foo (Borderless) (Foil Etched)")
+    assert result == "异画英文蚀刻闪"
+
+
+def test_finish_variant_with_normal_printing_warns(capsys):
+    result = _classify_and_compose_finish(["Foil Etched"], "Normal", "Foo (Foil Etched)")
+    err = capsys.readouterr().err
+    assert "Foil Etched" in err
+    assert "Normal" in err
+    assert result == "英文蚀刻闪"     # still applied despite warning
+
+
+def test_set_code_suffix_stripped_silently(capsys):
+    for suffix in ["DVD", "IMA", "A25", "2X2"]:
+        result = _classify_and_compose_finish([suffix], "Foil", f"Foo ({suffix})")
+        err = capsys.readouterr().err
+        assert err == "", f"unexpected warning for suffix '{suffix}'"
+        assert result == "英文闪"
+
+
+def test_number_suffix_stripped_silently(capsys):
+    for suffix in ["350", "280", "1553"]:
+        result = _classify_and_compose_finish([suffix], "Normal", f"Foo ({suffix})")
+        err = capsys.readouterr().err
+        assert err == "", f"unexpected warning for suffix '{suffix}'"
+        assert result == "英文平"
+
+
+def test_unknown_suffix_warns_and_defaults(capsys):
+    result = _classify_and_compose_finish(["Unknown Thing"], "Foil", "Foo (Unknown Thing)")
+    err = capsys.readouterr().err
+    assert "Unknown Thing" in err
+    assert result == "英文闪"          # defaults to base finish with no visual prefix
+
+
+def test_double_unknown_suffixes_both_warn(capsys):
+    # "Foo (Phyrexian) (ONE Bundle)" → suffixes = ["ONE Bundle", "Phyrexian"]
+    suffixes = ["ONE Bundle", "Phyrexian"]
+    _classify_and_compose_finish(suffixes, "Foil", "Foo (Phyrexian) (ONE Bundle)")
+    err = capsys.readouterr().err
+    assert "ONE Bundle" in err
+    assert "Phyrexian" in err
+
+
+# ── build_description ─────────────────────────────────────────────────────────
+
+def test_name_en_strips_parens_in_line2():
+    listing = {
+        "name_en": "Imperial Seal (Borderless)",
+        "name_zh": "玉玺",
+        "printing": "Normal",
+        "set_name_zh": "双星大师2022",
+        "set_code": "2X2",
+    }
+    lines = build_description(listing).split("\n")
+    assert lines[1] == "Imperial Seal"
+
+
+def test_shop_policy_appears_last_line():
+    listing = {
+        "name_en": "Lightning Bolt",
+        "name_zh": "闪电击",
+        "printing": "Normal",
+        "set_name_zh": "第四版",
+        "set_code": "4ED",
+    }
+    assert build_description(listing).split("\n")[-1] == SHOP_POLICY
+
+
+def test_full_description_jetmir():
+    listing = {
+        "name_en": "Jetmir's Garden",
+        "name_zh": "杰米尔的花园",
+        "printing": "Foil",
+        "set_name_zh": "新卡佩纳：喧嚣黑街",
+        "set_code": "SNC",
+    }
+    expected = (
+        "万智牌 MTG 杰米尔的花园\n"
+        "Jetmir's Garden\n"
+        "新卡佩纳：喧嚣黑街/SNC 英文闪\n"
+        "主页满300包邮"
+    )
+    assert build_description(listing) == expected
