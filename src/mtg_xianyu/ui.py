@@ -11,6 +11,8 @@ Must be run from the project root so that relative data/ paths resolve.
 
 import io
 import json
+import re
+import subprocess
 from datetime import datetime
 from pathlib import Path
 
@@ -18,7 +20,7 @@ from PIL import Image
 from pillow_heif import register_heif_opener
 import streamlit as st
 
-from mtg_xianyu.describe import build_description
+from mtg_xianyu.describe import build_description, build_finish_zh
 
 register_heif_opener()  # enable HEIC support for PIL.Image.open()
 
@@ -343,6 +345,39 @@ def _next_unfinished_idx(
     return None
 
 
+_TRAILING_PAREN_RE = re.compile(r"\s*\([^)]+\)\s*$")
+
+
+def _safe_name_en(name_en: str) -> str:
+    """Strip parentheticals and sanitize name_en for use in a filename."""
+    s = name_en or ""
+    while _TRAILING_PAREN_RE.search(s):
+        s = _TRAILING_PAREN_RE.sub("", s).strip()
+    s = s.replace("/", "-").replace(":", "-")
+    return " ".join(s.split()).strip()
+
+
+def _jpg_path_for(listing: dict, listings_dir: Path = LISTINGS_DIR) -> Path:
+    """Build the human-readable JPEG path for a listing, with collision fallback."""
+    row_id = listing.get("row_id", "unknown")
+    name_safe = _safe_name_en(listing.get("name_en", ""))
+
+    if not name_safe:
+        return listings_dir / f"{row_id}.jpg"
+
+    finish_zh = build_finish_zh(listing["name_en"], listing["printing"])
+    stem = (
+        f"{listing['set_code']}-{listing['collector_number']}"
+        f" - {name_safe}"
+        f" - {finish_zh}"
+    )
+    candidate = listings_dir / f"{stem}.jpg"
+    if candidate.exists():
+        copy_num = str(row_id).rsplit("_", 1)[-1]
+        return listings_dir / f"{stem} (copy {copy_num}).jpg"
+    return candidate
+
+
 def _do_approve(row: dict, row_id: str, state: dict) -> None:
     """Write JPEG + listing JSON to data/listings/, then mark row approved in state."""
     row_entry = state["rows"][row_id]
@@ -351,8 +386,10 @@ def _do_approve(row: dict, row_id: str, state: dict) -> None:
 
     LISTINGS_DIR.mkdir(parents=True, exist_ok=True)
 
+    jpg_path = _jpg_path_for(listing)
+    listing["photo_jpg"] = str(jpg_path)   # overwrite default set by _build_listing
+
     # HEIC → JPEG: .convert("RGB") normalises HEIC/alpha/palette to sRGB JPEG.
-    jpg_path = LISTINGS_DIR / f"{row_id}.jpg"
     Image.open(row_entry["photo_path"]).convert("RGB").save(
         str(jpg_path), format="JPEG", quality=90, optimize=True
     )
@@ -421,6 +458,8 @@ def _render_app() -> None:
             f"Progress: **{n_approved}** of {len(all_rows)} approved · "
             f"**{n_skipped}** skipped · **{n_remaining}** remaining"
         )
+        if st.button("📁 Open listings folder", use_container_width=True):
+            subprocess.run(["open", str(LISTINGS_DIR)])
 
     # ── init photo pool (once per session) ───────────────────────────────────
     if "unbound_pool" not in st.session_state:

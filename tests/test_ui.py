@@ -2,8 +2,10 @@ from mtg_xianyu.ui import (
     FX_RATE,
     _approval_hints,
     _build_listing,
+    _jpg_path_for,
     _next_unfinished_idx,
     _resolve_final_price_and_source,
+    _safe_name_en,
     effective_cny,
     sort_rows,
 )
@@ -283,3 +285,96 @@ def test_sort_rows_jhs_beats_usd_fallback():
     ]
     result = sort_rows(rows, "Effective CNY")
     assert result[0]["jihuanshe_price_cny"] == 100.0
+
+
+# ── _safe_name_en / _jpg_path_for ────────────────────────────────────────────
+
+def test_filename_generation_basic_card(tmp_path):
+    listing = {
+        "row_id": "234275_0",
+        "name_en": "Urborg, Tomb of Yawgmoth",
+        "printing": "Normal",
+        "set_code": "TSR",
+        "collector_number": "113",
+    }
+    path = _jpg_path_for(listing, listings_dir=tmp_path)
+    assert path.name == "TSR-113 - Urborg, Tomb of Yawgmoth - 英文平.jpg"
+
+
+def test_filename_strips_parentheticals_from_name_en(tmp_path):
+    listing = {
+        "row_id": "276329_0",
+        "name_en": "Imperial Seal (Borderless)",
+        "printing": "Normal",
+        "set_code": "2X2",
+        "collector_number": "354",
+    }
+    path = _jpg_path_for(listing, listings_dir=tmp_path)
+    assert path.name == "2X2-354 - Imperial Seal - 异画英文平.jpg"
+    assert "Borderless" not in path.name
+
+
+def test_filename_includes_finish_zh(tmp_path):
+    listing = {
+        "row_id": "265346_0",
+        "name_en": "Jetmir's Garden",
+        "printing": "Foil",
+        "set_code": "SNC",
+        "collector_number": "250",
+    }
+    path = _jpg_path_for(listing, listings_dir=tmp_path)
+    assert "英文闪" in path.name
+    assert path.name == "SNC-250 - Jetmir's Garden - 英文闪.jpg"
+
+
+def test_filename_handles_slash_in_name(tmp_path):
+    listing = {
+        "row_id": "test_0",
+        "name_en": "Fire // Ice",
+        "printing": "Foil",
+        "set_code": "USG",
+        "collector_number": "100",
+    }
+    path = _jpg_path_for(listing, listings_dir=tmp_path)
+    assert "/" not in path.name
+    assert path.name.startswith("USG-100 - Fire -- Ice")
+
+
+def test_filename_collision_handling(tmp_path):
+    listing = {
+        "row_id": "276329_1",
+        "name_en": "Imperial Seal (Borderless)",
+        "printing": "Normal",
+        "set_code": "2X2",
+        "collector_number": "354",
+    }
+    (tmp_path / "2X2-354 - Imperial Seal - 异画英文平.jpg").touch()
+    path = _jpg_path_for(listing, listings_dir=tmp_path)
+    assert path.name == "2X2-354 - Imperial Seal - 异画英文平 (copy 1).jpg"
+
+
+def test_filename_fallback_for_degenerate_data(tmp_path):
+    listing = {
+        "row_id": "bad_0",
+        "name_en": "(Borderless)",   # strips to empty string
+        "printing": "Normal",
+        "set_code": "TST",
+        "collector_number": "1",
+    }
+    path = _jpg_path_for(listing, listings_dir=tmp_path)
+    assert path.name == "bad_0.jpg"
+
+
+def test_listing_json_photo_jpg_points_at_new_name(tmp_path):
+    listing = {
+        "row_id": "276329_0",
+        "name_en": "Imperial Seal (Borderless)",
+        "printing": "Normal",
+        "set_code": "2X2",
+        "collector_number": "354",
+        "photo_jpg": "data/listings/276329_0.jpg",   # old opaque name
+    }
+    listing["photo_jpg"] = str(_jpg_path_for(listing, listings_dir=tmp_path))
+    assert "Imperial Seal" in listing["photo_jpg"]
+    assert "2X2-354" in listing["photo_jpg"]
+    assert "276329_0.jpg" not in listing["photo_jpg"]

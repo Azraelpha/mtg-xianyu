@@ -80,12 +80,19 @@ def _classify_and_compose_finish(
     return f"{visual_prefix}{LANGUAGE}{BASE_FINISH[printing]}"
 
 
+def build_finish_zh(name_en: str, printing: str) -> str:
+    """Return the finish_zh label (e.g. '异画英文平') for a card.
+
+    Shared by describe.py (description line 3) and ui.py (JPEG filename).
+    """
+    _, suffixes = _extract_suffixes(name_en)
+    return _classify_and_compose_finish(suffixes, printing, card_ref=name_en)
+
+
 def build_description(listing: dict) -> str:
     """Return the 4-line Xianyu listing description for one approved card."""
-    name_en_clean, suffixes = _extract_suffixes(listing["name_en"])
-    finish_zh = _classify_and_compose_finish(
-        suffixes, listing["printing"], card_ref=listing["name_en"]
-    )
+    name_en_clean, _ = _extract_suffixes(listing["name_en"])
+    finish_zh = build_finish_zh(listing["name_en"], listing["printing"])
     return "\n".join([
         f"万智牌 MTG {listing['name_zh']}",
         name_en_clean,
