@@ -59,6 +59,20 @@ def sort_rows(rows: list[dict], sort_by: str) -> list[dict]:
     return sorted(rows, key=effective_cny, reverse=True)
 
 
+_VIEW_FILTERS: dict[str, set[str]] = {
+    "Default":        {"ready_to_review", "approved"},
+    "All rows":       {"waiting_photo", "ready_to_review", "approved", "skipped"},
+    "Remaining only": {"waiting_photo", "ready_to_review"},
+    "Skipped only":   {"skipped"},
+}
+
+
+def _filter_rows(rows: list[dict], state: dict, view: str) -> list[dict]:
+    """Return rows whose current state is in the allowed set for view."""
+    allowed = _VIEW_FILTERS[view]
+    return [r for r in rows if _row_state(state, r.get("row_id", "")) in allowed]
+
+
 # ── state I/O ─────────────────────────────────────────────────────────────────
 
 def _load_state() -> dict:
@@ -430,7 +444,11 @@ def _render_app() -> None:
             key="sort_radio",
         )
         st.caption("Changes review order, not displayed prices.")
-        show_all = st.checkbox("Show all rows", key="show_all")
+        view = st.radio(
+            "View",
+            ["Default", "All rows", "Remaining only", "Skipped only"],
+            key="view_radio",
+        )
 
     # ── load enriched data ────────────────────────────────────────────────────
     all_rows = _load_enriched()
@@ -470,21 +488,15 @@ def _render_app() -> None:
     # Rebuild when sort/filter changes (→ reset index) OR when a bind/unbind
     # invalidated the cache (→ preserve index).
     sort_changed = st.session_state.get("_applied_sort") != sort_by
-    filter_changed = st.session_state.get("_applied_show_all") != show_all
+    filter_changed = st.session_state.get("_applied_view") != view
     needs_rebuild = "display_rows" not in st.session_state or sort_changed or filter_changed
 
     if needs_rebuild:
         sorted_all = sort_rows(all_rows, sort_by)
-        if show_all:
-            display_rows = sorted_all
-        else:
-            display_rows = [
-                r for r in sorted_all
-                if _row_state(state, r.get("row_id", "")) in ("ready_to_review", "approved")
-            ]
+        display_rows = _filter_rows(sorted_all, state, view)
         st.session_state.display_rows = display_rows
         st.session_state._applied_sort = sort_by
-        st.session_state._applied_show_all = show_all
+        st.session_state._applied_view = view
         if sort_changed or filter_changed:
             st.session_state.current_idx = 0
 
@@ -497,13 +509,12 @@ def _render_app() -> None:
     # ── empty state ───────────────────────────────────────────────────────────
     if total == 0:
         st.markdown("---")
-        if not show_all:
-            st.info(
-                "All rows are waiting on photo binding — no reviews ready yet.\n\n"
-                "Toggle **Show all rows** in the sidebar to browse the full collection."
-            )
+        if view == "Remaining only":
+            st.success("No remaining work — all approved or skipped.")
+        elif view == "Skipped only":
+            st.info("No skipped rows.")
         else:
-            st.error("No rows found in data/enriched.json.")
+            st.info("No rows match the current view.")
         return
 
     # ── guard index ───────────────────────────────────────────────────────────

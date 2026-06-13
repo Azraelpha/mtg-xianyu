@@ -2,6 +2,7 @@ from mtg_xianyu.ui import (
     FX_RATE,
     _approval_hints,
     _build_listing,
+    _filter_rows,
     _jpg_path_for,
     _next_unfinished_idx,
     _resolve_final_price_and_source,
@@ -378,3 +379,65 @@ def test_listing_json_photo_jpg_points_at_new_name(tmp_path):
     assert "Imperial Seal" in listing["photo_jpg"]
     assert "2X2-354" in listing["photo_jpg"]
     assert "276329_0.jpg" not in listing["photo_jpg"]
+
+
+# ── _filter_rows ──────────────────────────────────────────────────────────────
+
+def _make_state(*pairs):
+    """Build a minimal state dict from (row_id, state_str) pairs."""
+    return {"rows": {rid: {"state": s} for rid, s in pairs}}
+
+
+def test_filter_default_view_includes_ready_and_approved():
+    rows = [{"row_id": "r0"}, {"row_id": "r1"}]
+    state = _make_state(("r0", "ready_to_review"), ("r1", "approved"))
+    assert len(_filter_rows(rows, state, "Default")) == 2
+
+
+def test_filter_default_excludes_waiting_and_skipped():
+    rows = [{"row_id": "r0"}, {"row_id": "r1"}, {"row_id": "r2"}, {"row_id": "r3"}]
+    state = _make_state(
+        ("r0", "waiting_photo"), ("r1", "ready_to_review"),
+        ("r2", "approved"),      ("r3", "skipped"),
+    )
+    result = _filter_rows(rows, state, "Default")
+    assert [r["row_id"] for r in result] == ["r1", "r2"]
+
+
+def test_filter_all_rows_includes_everything():
+    rows = [{"row_id": "r0"}, {"row_id": "r1"}, {"row_id": "r2"}, {"row_id": "r3"}]
+    state = _make_state(
+        ("r0", "waiting_photo"), ("r1", "ready_to_review"),
+        ("r2", "approved"),      ("r3", "skipped"),
+    )
+    assert len(_filter_rows(rows, state, "All rows")) == 4
+
+
+def test_filter_remaining_only_includes_waiting_and_ready():
+    rows = [{"row_id": "r0"}, {"row_id": "r1"}]
+    state = _make_state(("r0", "waiting_photo"), ("r1", "ready_to_review"))
+    assert len(_filter_rows(rows, state, "Remaining only")) == 2
+
+
+def test_filter_remaining_only_excludes_approved_and_skipped():
+    rows = [{"row_id": "r0"}, {"row_id": "r1"}, {"row_id": "r2"}, {"row_id": "r3"}]
+    state = _make_state(
+        ("r0", "waiting_photo"), ("r1", "ready_to_review"),
+        ("r2", "approved"),      ("r3", "skipped"),
+    )
+    result = _filter_rows(rows, state, "Remaining only")
+    assert [r["row_id"] for r in result] == ["r0", "r1"]
+
+
+def test_filter_skipped_only_only_skipped():
+    rows = [{"row_id": "r0"}, {"row_id": "r1"}, {"row_id": "r2"}]
+    state = _make_state(("r0", "approved"), ("r1", "skipped"), ("r2", "waiting_photo"))
+    result = _filter_rows(rows, state, "Skipped only")
+    assert len(result) == 1
+    assert result[0]["row_id"] == "r1"
+
+
+def test_filter_empty_when_no_matching_states():
+    rows = [{"row_id": "r0"}, {"row_id": "r1"}]
+    state = _make_state(("r0", "approved"), ("r1", "approved"))
+    assert _filter_rows(rows, state, "Skipped only") == []
