@@ -8,20 +8,26 @@ See `@./SPEC.md` for the full design.
 
 ## Status
 
-v0.4 in progress — enrich.py complete with name-match verification
-(803/808 correctly enriched, 5 honest nulls); UI stage 2 complete
-(read-only view, dual prices, editable name field); stage 3 (state
-persistence) next.
+v0.5 — v1 UI complete (stages 1–6), describe.py landed with treatment-aware
+finish_zh, real Xianyu listings producible end-to-end. parse.py and enrich.py
+are production-ready (803/808 enriched, 5 honest nulls). match.py and price.py
+remain as unimplemented stubs; their functionality was deliberately absorbed into
+ui.py (manual photo binding + inline dual-price selection — see Pipeline below).
+Currently refining UI based on real listing workflow feedback. Automated Xianyu
+publish (playwright) deferred to v2.
 
 ## Stack
 
 - Python 3.11+
 - `numbers-parser` — read TCGPlayer Apple Numbers export (CSV also accepted)
 - `httpx` — sbwsz HTTP API client
-- `Pillow` + `imagehash` — perceptual hashing for photo ↔ stock-image matching
-- `pillow-heif` — HEIC decode support (user photos are iPhone-native HEIC)
-- Anthropic SDK (vision) — fallback for low-confidence photo matches only
-- `streamlit` — local review/edit UI
+- `Pillow` + `pillow-heif` — image I/O; HEIC decode (iPhone-native photos)
+- `imagehash` — installed but currently unused; was planned for match.py perceptual
+  hashing, which was never built; manual photo binding in the UI replaced it
+- Anthropic SDK — available for future vision-based features; currently unused
+  (describe.py uses template-based generation, not LLM)
+- `streamlit` — local review/edit/approve UI (active, core to workflow)
+- `rapidfuzz` — fuzzy matching used in enrich.py name normalization
 - (deferred) `playwright` — only if/when we attempt Xianyu browser automation
 
 ## External data — one source, no fallbacks
@@ -57,50 +63,66 @@ directly from Python. See SPEC §8.
 ├── src/mtg_xianyu/
 │   ├── parse.py       # TCGPlayer export → normalized rows (expands multi-qty)
 │   ├── enrich.py      # sbwsz lookups: Chinese names, set names, image, prices
-│   ├── match.py       # photo files ↔ rows (phash first, vision fallback)
-│   ├── price.py       # dual-source price suggestions (USD heuristic + Jihuanshe)
-│   ├── describe.py    # Chinese listing title + bilingual description body
-│   └── ui.py          # Streamlit review/edit interface
+│   ├── match.py       # stub — NOT BUILT; manual photo binding in ui.py instead
+│   ├── price.py       # stub — NOT BUILT; dual-price logic lives in ui.py instead
+│   ├── describe.py    # treatment-aware finish_zh + 4-line Xianyu description
+│   └── ui.py          # Streamlit review/edit/approve interface (photo bind,
+│                      #   dual-price selection, HEIC→JPEG export, state machine)
 ├── data/
 │   ├── mtg_photos/    # user photos in HEIC (gitignored)
 │   ├── cache/
 │   │   └── sbwsz/
 │   │       ├── cards/     # per-card responses, keyed by set/number (gitignored)
 │   │       └── sets.json  # set list with fetched_at timestamp (gitignored)
-│   └── (collection file also gitignored)
+│   ├── rows.json          # parse.py output (gitignored)
+│   ├── enriched.json      # enrich.py output (gitignored)
+│   └── listings/          # approve output: per-row .json + .jpg + .txt
+│       └── state.json     # UI state machine (gitignored)
 └── tests/
+    ├── test_parse.py
+    ├── test_enrich.py
+    ├── test_ui.py
+    └── test_describe.py
 ```
 
 ## Pipeline
 
 ```
-collection.numbers ─► parse.py    ─► rows.json
-                                          │
-                                          ▼
-                      enrich.py    ─► enriched.json   (calls sbwsz)
-                                          │
-photos/*.jpg ────────► match.py    ─► matched.json
-                                          │
-                                          ▼
-                      price.py     ─► priced.json
-                                          │
-                                          ▼
-                      describe.py  ─► listings.json
-                                          │
-                                          ▼
-                      ui.py (review / edit / approve / export)
+collection.csv ──► parse.py ──► rows.json
+                                    │
+                                    ▼
+                   enrich.py ──► enriched.json   (calls sbwsz)
+                                    │
+                                    ▼
+                   ui.py  (Streamlit — manual workflow)
+                     • sort / browse by price
+                     • bind HEIC photo to each row
+                     • view dual prices (JHS CNY + USD-converted)
+                     • set price_cny / price_source
+                     • edit name_zh override when sbwsz returned null
+                     • approve → writes {set_code}-{num} - {name} - {finish_zh}.jpg
+                                        + {row_id}.json
+                                        + {row_id}.txt  (describe.py output)
 ```
 
-Each stage reads from disk and writes to disk; stages are independently
-re-runnable.
+**match.py and price.py are stubs and will remain so.** Their originally planned
+functionality (perceptual-hash photo matching, separate priced.json stage) was
+deliberately collapsed into ui.py's manual workflow during the Stage 2 design
+decision (Option 3). This is not a TODO — it's an architectural choice. The
+manual binding produces better results for a ~800-card one-time job than an
+automated matcher that would need manual review anyway.
+
+`mtg-describe` can also be run standalone as a CLI to regenerate all `.txt` files
+from existing `.json` listings (e.g., after updating the treatment mappings).
 
 ## Always
 
 - Expand `Add to Quantity > 1` rows into one logical row per physical card in
   `parse.py`. **Downstream code must never see multi-quantity rows.**
 - Preserve variant treatment in card names — `Imperial Seal (Borderless)` must
-  stay `Imperial Seal (Borderless)` through every stage; the Chinese title
-  should carry the treatment where possible.
+  stay `Imperial Seal (Borderless)` through every stage; `finish_zh` in the
+  description encodes the treatment, and `_safe_name_en` strips it from the
+  JPEG filename to avoid duplication.
 - Set a descriptive `User-Agent` on every sbwsz request, identifying the tool
   and a contact. Space requests ≥100 ms apart. sbwsz is community-run; be
   respectful.
@@ -110,25 +132,31 @@ re-runnable.
   (Normal/Foil), condition, USD market price, quantity.
 - Treat **sbwsz** as authoritative for: Chinese card name, Chinese set name,
   set code, Jihuanshe CNY market price (when present), reference image URI.
-- Produce **both** price suggestions for every card in `price.py` (USD-derived
-  and Jihuanshe-derived). The UI displays both and lets the user pick.
-- Every pipeline stage lands with a corresponding test file under
-  `tests/test_<stage>.py` in the same commit as the implementation.
-  Never commit a stage without its tests.
-- Parse-stage validation is fail-fast: any field that downstream
-  stages need as a non-null key (collector number, set name,
-  condition, finish) must raise ValueError with a row reference.
-  Fields that downstream stages can handle as null (price, optional
-  descriptive fields) pass through with a log line.
-- Cache keys are derived from the full request URL including query
-  string. Two URLs with the same path but different query parameters
-  are different cache entries.
-- Stages must remain re-runnable from disk state. Each stage reads
-  its input file and writes its output file; no in-memory state passes
-  between stages.
-- After Claude Code completes a multi-part task, verify each item
-  against the original prompt before approving. Coding agents are
-  lossy on tail items.
+- Produce **both** price suggestions for every card in the UI (USD-derived and
+  Jihuanshe-derived). Display both and let the user pick. Never show only one.
+- Every module that gets built lands with a corresponding test file under
+  `tests/test_<module>.py` in the same commit. Never commit without tests.
+- Parse-stage validation is fail-fast: any field that downstream stages need as
+  a non-null key (collector number, set name, condition, finish) must raise
+  ValueError with a row reference. Fields that downstream stages can handle as
+  null pass through with a log line.
+- Cache keys are derived from the full request URL including query string. Two
+  URLs with the same path but different query parameters are different cache
+  entries.
+- Stages must remain re-runnable from disk state. Each stage reads its input
+  and writes its output; no in-memory state passes between stages.
+- After Claude Code completes a multi-part task, verify each item against the
+  original prompt before approving. Coding agents are lossy on tail items.
+- State mutations in Streamlit (button clicks, `on_change` callbacks that write
+  `state.json`) need an explicit `st.rerun()` after, or the UI shows
+  one-click-behind state.
+- `_approval_hints` in `ui.py` is the single source of truth for "is this row
+  approvable." Both the visual hint area and the Approve button's `disabled`
+  state read from it. Never duplicate that logic elsewhere.
+- `build_finish_zh` in `describe.py` is the single source of truth for
+  treatment classification (Borderless → 异画, Foil Etched → 蚀刻闪, etc.).
+  Both `describe.py` (description line 3) and `ui.py` (JPEG filename) call it.
+  Never duplicate.
 
 ## Never
 
@@ -152,45 +180,68 @@ re-runnable.
   pre-Bloomburrow, so for v1 this is a minor case.
 - **Foil and condition are already in the TCGPlayer export.** Don't build a UI
   to re-collect them; build a UI to *verify* them.
-- **TCG Market Price is USD; Jihuanshe is CNY.** Don't mix units. The price
-  stage emits both; the UI shows both.
-- **Photo matching is closed-world.** Every user photo corresponds to exactly
-  one row in the expanded export. sbwsz's per-card response includes a
-  reference image; perceptual hash against that handles >80% with zero LLM cost.
+- **TCG Market Price is USD; Jihuanshe is CNY.** Don't mix units. The UI shows
+  both and lets the user choose; the approved listing records which source won.
+- **Photo matching is manual in the UI, not automated.** The original plan was
+  perceptual hashing in match.py; this was abandoned in favour of a manual
+  binding grid in ui.py. Each user photo is a thumbnail the user drags/clicks
+  to bind to a row. Closed-world: every photo maps to exactly one row.
 - **sbwsz is community-run and `robots.txt`-protected.** Don't crawl; query
   specific cards. Cache. Honor the implicit rate limit.
 - **User photos are HEIC** (Apple's iPhone-native format). Register
   `pillow-heif` as a Pillow opener at the start of any module that opens a
-  photo. Vision-API calls and final listing exports must convert HEIC → JPEG
-  in memory; do not assume `.jpg` files exist on disk by default.
+  photo. The approve action converts HEIC → JPEG in memory via
+  `Image.open(...).convert("RGB").save(...)`. Do not assume `.jpg` files exist
+  on disk by default.
 - **sbwsz's `/api/v1/card/` endpoint returns a lean response by default;
   only `?view=1` includes `prices.cny` and the `versions` array. Always
   include `?view=1` on card requests.**
-- **Uniform failure patterns almost always indicate a normalization
-  mismatch, not missing data.** If a batch of cards all fail for the same
-  structural reason (e.g. every unrecoverable card shares trailing
-  parenthetical suffixes), diagnose the pattern before accepting the gap
-  as structural. The 18-card gap in enrich v0.3 looked like missing sbwsz
-  data but was entirely a name-normalization mismatch.
-- **A HTTP 200 response from sbwsz's `/card/{set}/{number}/` does NOT
-  guarantee the returned card is the one you asked for** — collector_number
-  conflicts between TCGPlayer and sbwsz can return a real-but-wrong card.
-  `_get_card` verifies `faces[0].name` against the requested row's `name_en`
-  before accepting. Same principle as the PLST slash collision verification.
+- **Uniform failure patterns almost always indicate a normalization mismatch,
+  not missing data.** If a batch of cards all fail for the same structural
+  reason (e.g. every unrecoverable card shares trailing parenthetical suffixes),
+  diagnose the pattern before accepting the gap as structural. The 18-card gap
+  in enrich v0.3 looked like missing sbwsz data but was entirely a
+  name-normalization mismatch.
+- **A HTTP 200 response from sbwsz's `/card/{set}/{number}/` does NOT guarantee
+  the returned card is the one you asked for** — collector_number conflicts
+  between TCGPlayer and sbwsz can return a real-but-wrong card. `_get_card`
+  verifies `faces[0].name` against the requested row's `name_en` before
+  accepting. Same principle as the PLST slash collision verification.
+- **Xianyu's seller form has no separate title field** — the first line of the
+  description is treated as the title implicitly. `describe.py` produces a
+  single 4-line description string; line 1 (`万智牌 MTG {name_zh}`) doubles as
+  the listing title.
+- **Card name parenthetical suffixes encode four different things:**
+  - Visual treatments (`Borderless`, `Retro Frame`, `Extended Art`, `Showcase`)
+    — combine with base finish: `异画英文闪`, `老框英文平`, etc.
+  - Finish variants (`Foil Etched`, `Rainbow Foil`, `Surge Foil`) — replace the
+    base finish suffix entirely: `英文蚀刻闪`, `英文彩虹闪`, `英文潮涌闪`.
+  - Set codes (`DVD`, `IMA`, `A25`, `2X2`) — silently stripped.
+  - Collector numbers (`350`, `280`, `1553`) — silently stripped.
+  - `describe.py`'s `_classify_and_compose_finish` handles all four categories
+    with warn-and-continue fallback for unmapped treatments.
+- **JPEG filenames at approve time use human-readable format**
+  `{set_code}-{collector_number} - {name_en_safe} - {finish_zh}.jpg`
+  so the macOS file picker can identify cards by name when uploading to Xianyu.
+  `name_en_safe` strips parentheticals (treatment is already in `finish_zh`) and
+  replaces `/` and `:` with `-`. Collision with an existing file appends
+  `(copy {N})`. Listings approved before this naming change keep their old
+  `{row_id}.jpg` names on disk.
 
 ## Commands
 
-_To be filled in as scripts land. Tentative:_
-
 ```bash
-uv run mtg-parse   data/collection.csv       # → data/rows.json
-uv run mtg-enrich  data/rows.json            # → data/enriched.json
-uv run mtg-match   data/enriched.json data/mtg_photos/   # → data/matched.json
-uv run mtg-price   data/matched.json         # → data/priced.json
-uv run mtg-describe data/priced.json         # → data/listings.json
+# Run from project root
 
-# Review UI — must be run from project root (data/ paths are relative)
+uv run mtg-parse   data/collection.csv      # → data/rows.json
+uv run mtg-enrich  data/rows.json           # → data/enriched.json
+
+# Review UI — main workflow
 uv run streamlit run src/mtg_xianyu/ui.py
+
+# Regenerate .txt description files from all existing .json listings
+# (re-run after updating treatment mappings in describe.py)
+uv run mtg-describe
 ```
 
 ## Operations
@@ -200,7 +251,11 @@ uv run streamlit run src/mtg_xianyu/ui.py
 Approval is terminal in v1 — the UI has no re-approve button. To redo
 an approved row manually:
 
-1. Delete `data/listings/{row_id}.json` and `data/listings/{row_id}.jpg`.
+1. Find and delete the three files written at approve time:
+   - `data/listings/{row_id}.json`
+   - `data/listings/{row_id}.txt`
+   - The JPEG (human-readable name like `SNC-250 - Jetmir's Garden - 英文闪.jpg`;
+     check `photo_jpg` in the JSON before deleting)
 2. Edit `data/listings/state.json`: find the row entry and change
    `"state": "approved"` back to `"ready_to_review"`, clear
    `"approved_at"` to `null`. Leave `photo_path`, `name_zh_override`,
@@ -212,11 +267,33 @@ an approved row manually:
 ### Photo directory changes between sessions
 
 If photos are added, moved, or deleted between UI sessions, click
-**↻ Refresh photo pool** in the sidebar to rescan. The pool is
+**↻ Refresh** in the sidebar photo pool section to rescan. The pool is
 built once per session on startup; it does not auto-refresh.
+
+### Xianyu listing workflow (per card)
+
+1. Approve card in UI → the `.json`, `.jpg`, and `.txt` files land in
+   `data/listings/`.
+2. Copy the 4-line description from the `st.code` block shown below the
+   approval timestamp (it has a built-in copy icon).
+3. Switch to the Xianyu seller form:
+   - Paste into **宝贝描述**.
+   - Set **成色** dropdown to match the condition.
+   - Upload the JPEG via file picker: click **📁 Open listings folder** in
+     the UI sidebar to open `data/listings/` in Finder first — filenames
+     are human-readable, so the right photo is easy to find.
+   - Enter the CNY price.
+   - Publish.
 
 ## Open decisions
 
-- Calibration of USD and Jihuanshe price multipliers (tune empirically after
-  selling the first batch).
-- Whether v3 attempts Playwright-driven Xianyu publish (account risk).
+- Calibration of USD and Jihuanshe price multipliers — tune empirically after
+  selling the first batch. (`FX_RATE = 7.25` is hardcoded in `ui.py`.)
+- Whether v2 attempts Playwright-driven Xianyu publish (account risk, session
+  handling complexity).
+- Treatment suffix mapping is partial — the six most common visual treatments
+  and three finish variants are mapped; rarer suffixes (`Anime Borderless`,
+  `Oil Slick Raised Foil`, `Future Sight` frame, `White Border`, `JP Alternate
+  Art`, etc.) fall to the warn-and-default path. Expand `VISUAL_TREATMENTS` /
+  `FINISH_VARIANTS` in `describe.py` as cards with unmapped treatments are
+  approved.
