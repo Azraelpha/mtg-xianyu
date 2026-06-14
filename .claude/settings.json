@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -)",
+      "Bash(2>&1)",
+      "Bash(uv run *)",
+      "Bash(echo \"EXIT: $?\")"
+    ]
+  }
+}
