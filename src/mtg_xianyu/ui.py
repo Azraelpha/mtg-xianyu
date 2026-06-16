@@ -380,8 +380,9 @@ def _jpg_path_for(listing: dict, listings_dir: Path = LISTINGS_DIR) -> Path:
         return listings_dir / f"{row_id}.jpg"
 
     finish_zh = build_finish_zh(listing["name_en"], listing["printing"])
+    cn_safe = listing.get("collector_number", "").replace("/", "-")
     stem = (
-        f"{listing['set_code']}-{listing['collector_number']}"
+        f"{listing['set_code']}-{cn_safe}"
         f" - {name_safe}"
         f" - {finish_zh}"
     )

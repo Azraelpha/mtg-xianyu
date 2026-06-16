@@ -341,6 +341,20 @@ def test_filename_handles_slash_in_name(tmp_path):
     assert path.name.startswith("USG-100 - Fire -- Ice")
 
 
+def test_filename_slash_in_collector_number(tmp_path):
+    # PLST collector numbers are "NNN/NNN" — the slash must not create a subdirectory
+    listing = {
+        "row_id": "222540_0",
+        "name_en": "Temporal Manipulation",
+        "printing": "Normal",
+        "set_code": "PLST",
+        "collector_number": "077/254",
+    }
+    path = _jpg_path_for(listing, listings_dir=tmp_path)
+    assert path.parent == tmp_path, "slash in collector_number must not create a subdirectory"
+    assert path.name == "PLST-077-254 - Temporal Manipulation - 英文平.jpg"
+
+
 def test_filename_collision_handling(tmp_path):
     listing = {
         "row_id": "276329_1",
