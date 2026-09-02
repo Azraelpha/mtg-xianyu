@@ -254,6 +254,12 @@ def _row_state(state: dict, row_id: str) -> str:
     return state.get("rows", {}).get(row_id, {}).get("state", "waiting_photo")
 
 
+def _require_row_mutable(state: dict, row_id: str) -> None:
+    """Reject writes to approved rows, which are terminal in the v1 workflow."""
+    if _row_state(state, row_id) == "approved":
+        raise ValueError(f"row {row_id!r} is approved and read-only")
+
+
 def _progress_counts(all_rows: list[dict], state: dict) -> tuple[int, int, int]:
     """Count current-dataset states, ignoring preserved rows from older data."""
     current_ids = {row["row_id"] for row in all_rows}
@@ -269,6 +275,7 @@ def _progress_counts(all_rows: list[dict], state: dict) -> tuple[int, int, int]:
 
 def _set_row_state(state: dict, row_id: str, **fields) -> None:
     """Partial-update a row's state entry and persist to disk."""
+    _require_row_mutable(state, row_id)
     _ensure_row(state, row_id)
     state["rows"][row_id].update(fields)
     _save_state(state)
@@ -309,6 +316,7 @@ def _refresh_pool(state: dict, active_row_ids: set[str]) -> None:
 
 def _bind_photo(row_id: str, photo_path: Path, state: dict) -> None:
     """Bind photo_path to row_id; return any previously-bound photo to the pool."""
+    _require_row_mutable(state, row_id)
     row_entry = state.get("rows", {}).get(row_id, {})
     old_photo_str = row_entry.get("photo_path")
 
@@ -334,6 +342,7 @@ def _bind_photo(row_id: str, photo_path: Path, state: dict) -> None:
 
 def _unbind_photo(row_id: str, state: dict) -> None:
     """Unbind current photo; return it to pool. Preserves name/price edits."""
+    _require_row_mutable(state, row_id)
     row_entry = state.get("rows", {}).get(row_id, {})
     old_photo_str = row_entry.get("photo_path")
 
@@ -390,8 +399,9 @@ def _photo_can_open(path_str: str, mtime_ns: int) -> bool:
 # ── on_change callbacks ───────────────────────────────────────────────────────
 
 def _on_name_change(row_id: str) -> None:
-    val = st.session_state.get(f"name_zh_{row_id}", "").strip()
     state = st.session_state.state
+    _require_row_mutable(state, row_id)
+    val = st.session_state.get(f"name_zh_{row_id}", "").strip()
     _ensure_row(state, row_id)
     state["rows"][row_id]["name_zh_override"] = val if val else None
     _save_state(state)
@@ -412,8 +422,9 @@ def _parse_manual_price(value: str) -> float:
 
 
 def _on_price_override_change(row_id: str) -> None:
-    val = st.session_state.get(f"price_override_{row_id}", "").strip()
     state = st.session_state.state
+    _require_row_mutable(state, row_id)
+    val = st.session_state.get(f"price_override_{row_id}", "").strip()
     _ensure_row(state, row_id)
     if val:
         try:
@@ -740,6 +751,7 @@ def _write_listing_artifacts(
 
 def _do_approve(row: dict, row_id: str, state: dict) -> None:
     """Atomically create listing artifacts, then persist the approved state."""
+    _require_row_mutable(state, row_id)
     row_entry = state["rows"][row_id]
     original_row_entry = dict(row_entry)
     ts = datetime.now().isoformat(timespec="seconds")
@@ -920,6 +932,7 @@ def _render_app() -> None:
 
     # ── per-row state (computed once, used in both columns) ──────────────────
     current_row_state = row_entry.get("state", "waiting_photo")
+    row_is_approved = current_row_state == "approved"
     hints_for_approval = (
         _approval_hints(row, row_entry)
         if current_row_state in ("ready_to_review", "skipped")
@@ -975,11 +988,15 @@ def _render_app() -> None:
                 st.image(_load_display_image(bound_photo), width=400)
             except Exception as exc:
                 st.warning(f"Cannot open {Path(bound_photo).name}: {exc}")
-            if st.button("✕ Unbind", key=f"unbind_{row_id}"):
+            if not row_is_approved and st.button(
+                "✕ Unbind", key=f"unbind_{row_id}"
+            ):
                 _unbind_photo(row_id, state)
         elif bound_photo:
             st.warning(f"Photo file missing: {Path(bound_photo).name}")
-            if st.button("✕ Unbind (file missing)", key=f"unbind_{row_id}"):
+            if not row_is_approved and st.button(
+                "✕ Unbind (file missing)", key=f"unbind_{row_id}"
+            ):
                 _unbind_photo(row_id, state)
         else:
             st.markdown(
@@ -995,6 +1012,7 @@ def _render_app() -> None:
         st.text_input(
             "Chinese name (edit if wrong)",
             key=name_key,
+            disabled=row_is_approved,
             on_change=_on_name_change,
             args=(row_id,),
         )
@@ -1018,7 +1036,8 @@ def _render_app() -> None:
                 st.caption("not in sbwsz")
             jhs_btn = "▶ Active" if jhs_active else "Use this ✓"
             if st.button(jhs_btn, key=f"use_jhs_{row_id}",
-                         disabled=(jhs is None), use_container_width=True):
+                         disabled=(row_is_approved or jhs is None),
+                         use_container_width=True):
                 _set_row_state(
                     state, row_id, price_cny=jhs, price_source="jhs", price_error=None
                 )
@@ -1035,7 +1054,8 @@ def _render_app() -> None:
                 st.caption("no USD price")
             usd_btn = "▶ Active" if usd_active else "Use this ✓"
             if st.button(usd_btn, key=f"use_usd_{row_id}",
-                         disabled=(usd is None), use_container_width=True):
+                         disabled=(row_is_approved or usd is None),
+                         use_container_width=True):
                 _set_row_state(
                     state,
                     row_id,
@@ -1053,6 +1073,7 @@ def _render_app() -> None:
             "Manual override (CNY)" + (" ✅" if manual_active else ""),
             key=price_key,
             placeholder="Enter CNY amount if neither above is right",
+            disabled=row_is_approved,
             on_change=_on_price_override_change,
             args=(row_id,),
         )
@@ -1179,6 +1200,7 @@ def _render_app() -> None:
                     st.markdown("⚠️ unreadable")
                 st.caption(photo_path.name)
                 if st.button("Bind ✓", key=f"bind_{photo_path.name}",
+                             disabled=row_is_approved,
                              use_container_width=True):
                     _bind_photo(row_id, photo_path, state)
 

@@ -1,5 +1,7 @@
 import json
+from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -163,6 +165,48 @@ def test_unbound_pool_ignores_stale_state_bindings(tmp_path, monkeypatch):
 
 
 # ── effective_cny ─────────────────────────────────────────────────────────────
+
+# Approved-row immutability
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda state: ui._set_row_state(state, "12345_0", price_cny=99.0),
+        lambda state: ui._bind_photo("12345_0", Path("replacement.heic"), state),
+        lambda state: ui._unbind_photo("12345_0", state),
+        lambda state: ui._do_approve({}, "12345_0", state),
+    ],
+)
+def test_approved_rows_reject_direct_mutations(mutation):
+    state = {"rows": {"12345_0": {"state": "approved"}}}
+    original = deepcopy(state)
+
+    with pytest.raises(ValueError, match="approved and read-only"):
+        mutation(state)
+
+    assert state == original
+
+
+@pytest.mark.parametrize(
+    "callback",
+    [ui._on_name_change, ui._on_price_override_change],
+)
+def test_approved_rows_reject_widget_callbacks(monkeypatch, callback):
+    state = {"rows": {"12345_0": {"state": "approved"}}}
+    original = deepcopy(state)
+    monkeypatch.setattr(
+        ui,
+        "st",
+        SimpleNamespace(session_state=SimpleNamespace(state=state)),
+    )
+
+    with pytest.raises(ValueError, match="approved and read-only"):
+        callback("12345_0")
+
+    assert state == original
+
+
+# effective_cny
 
 def test_effective_cny_uses_jhs_when_present():
     assert effective_cny({"jihuanshe_price_cny": 42.5, "usd_market": 10.0}) == 42.5

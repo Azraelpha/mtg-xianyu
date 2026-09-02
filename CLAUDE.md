@@ -264,7 +264,8 @@ uv run mtg-describe
 ### Re-approving a row
 
 Approval is terminal in v1 — the UI has no re-approve button. To redo
-an approved row manually:
+an approved row manually, its editing and photo-binding controls remain
+read-only until the state and existing artifacts are reset together:
 
 1. Find and delete the three files written at approve time:
    - `data/listings/{row_id}.json`

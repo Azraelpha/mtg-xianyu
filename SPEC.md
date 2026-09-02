@@ -424,6 +424,11 @@ ready_to_review ──[Approve]──► approved  (terminal — see Operations 
 skipped ──[re-bind + re-price]──► ready_to_review
 ```
 
+Approved rows are read-only in the UI: name, price, bind, and unbind controls
+are disabled, and their mutation callbacks reject approved state as a second
+line of defense. Re-approval requires the explicit manual recovery procedure
+in `CLAUDE.md`, including removal of the existing artifacts.
+
 Per-row state persisted in `state.json`:
 `{state, photo_path, name_zh_override, price_cny, price_source, price_error,
 approved_at}`
