@@ -1,6 +1,8 @@
+from pathlib import Path
+
 import pytest
 
-from mtg_xianyu.parse import _collector_number, _normalize
+from mtg_xianyu.parse import _collector_number, _normalize, _read_csv
 
 
 def _row(**overrides):
@@ -82,6 +84,29 @@ def test_missing_set_name_raises():
 def test_missing_condition_raises():
     with pytest.raises(ValueError, match="condition"):
         _normalize([_row(**{"Condition": None})])
+
+
+@pytest.mark.parametrize("value", [None, "", "   "])
+def test_missing_printing_raises_with_row_context(value):
+    with pytest.raises(ValueError, match=r"printing.*source row 0"):
+        _normalize([_row(Printing=value)])
+
+
+@pytest.mark.parametrize("column", ["Product Line", "Add to Quantity"])
+def test_missing_required_source_column_raises_before_normalizing(column):
+    row = _row()
+    del row[column]
+
+    with pytest.raises(ValueError, match=rf"missing required column.*{column}"):
+        _normalize([row])
+
+
+def test_header_only_csv_still_validates_required_columns(tmp_path: Path):
+    path = tmp_path / "collection.csv"
+    path.write_text("Product Line,Product ID\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"missing required column.*Set Name"):
+        _read_csv(path)
 
 
 @pytest.mark.parametrize("qty", [0, -1, 1.5, "abc", float("nan")])

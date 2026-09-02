@@ -15,6 +15,28 @@ from mtg_xianyu.storage import atomic_write_json
 
 # Zip magic bytes — Numbers files are zip archives regardless of extension.
 _ZIP_MAGIC = b"PK\x03\x04"
+_REQUIRED_SOURCE_COLUMNS = (
+    "Product Line",
+    "Product ID",
+    "Set Name",
+    "Product Name",
+    "Number",
+    "Condition",
+    "Printing",
+    "Add to Quantity",
+)
+
+
+def _validate_source_columns(columns, source: object) -> None:
+    """Fail before normalization when the export schema is incomplete."""
+    available = set(columns)
+    missing = [name for name in _REQUIRED_SOURCE_COLUMNS if name not in available]
+    if missing:
+        names = ", ".join(repr(name) for name in missing)
+        raise ValueError(
+            f"invalid TCGPlayer export {source}: missing required "
+            f"column(s): {names}"
+        )
 
 
 def _is_numbers_file(path: Path) -> bool:
@@ -43,8 +65,9 @@ def _read_numbers(path: Path) -> list[dict]:
     table = doc.sheets[0].tables[0]
     rows = list(table.rows())
     if not rows:
-        return []
+        _validate_source_columns((), path)
     headers = [str(c.value) if c.value is not None else "" for c in rows[0]]
+    _validate_source_columns(headers, path)
     return [
         {headers[i]: cell.value for i, cell in enumerate(row) if i < len(headers)}
         for row in rows[1:]
@@ -53,7 +76,9 @@ def _read_numbers(path: Path) -> list[dict]:
 
 def _read_csv(path: Path) -> list[dict]:
     with path.open(newline="", encoding="utf-8-sig") as f:
-        return list(csv.DictReader(f))
+        reader = csv.DictReader(f)
+        _validate_source_columns(reader.fieldnames or (), path)
+        return list(reader)
 
 
 def _str(val) -> str:
@@ -120,6 +145,9 @@ def _positive_int(val, field: str, ref: str, *, default: int | None = None) -> i
 
 
 def _normalize(raw_rows: list[dict]) -> list[dict]:
+    if raw_rows:
+        _validate_source_columns(raw_rows[0].keys(), "input rows")
+
     result = []
     for idx, raw in enumerate(raw_rows):
         if "Magic" not in _str(raw.get("Product Line")):
@@ -138,7 +166,7 @@ def _normalize(raw_rows: list[dict]) -> list[dict]:
             "collector_number": _collector_number(raw.get("Number")),
             "rarity": _str(raw.get("Rarity")),
             "condition": _str(raw.get("Condition")),
-            "printing": _str(raw.get("Printing")) or "Normal",
+            "printing": _str(raw.get("Printing")),
             "usd_market": _float(raw.get("TCG Market Price")),
             "tcg_photo_url": _str(raw.get("Photo URL")),
         }

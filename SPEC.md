@@ -137,7 +137,11 @@ Output `rows.json` — a list of:
 Validation is fail-fast for fields downstream stages require as non-null keys
 (`product_id`, `name_en`, `collector_number`, `set_name_en`, `condition`,
 `printing`). Quantity and product ID must be positive integers, and printing
-must be `Normal` or `Foil`; failures name the source row. Fields that
+must be explicitly present as `Normal` or `Foil`; it is never guessed from a
+blank value. The export's required columns are validated before normalization,
+including for files that contain a header but no data rows, so a renamed or
+incomplete schema cannot silently produce an empty output. Failures name the
+missing columns or source row. Fields that
 downstream stages can handle as null (`usd_market`, optional descriptive fields)
 pass through with a log line.
 

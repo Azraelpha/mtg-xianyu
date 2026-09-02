@@ -142,9 +142,10 @@ from existing `.json` listings (e.g., after updating the treatment mappings).
   `tests/test_<module>.py` in the same commit. Never commit without tests.
 - Parse-stage validation is fail-fast: quantity and product ID must be positive
   integers; product ID, card name, collector number, set name, condition, and
-  finish must be present; finish must be Normal or Foil. Failures raise
-  ValueError with a row reference. Fields downstream can handle as null pass
-  through with a log line.
+  finish must be present; finish must be Normal or Foil and is never defaulted
+  from a blank value. Required export columns are checked before normalization.
+  Failures raise ValueError with a column or row reference. Fields downstream
+  can handle as null pass through with a log line.
 - Enrich-stage disk input is revalidated before network access. Malformed cache
   entries degrade to cache misses; malformed live sbwsz response shapes fail
   with the endpoint in the error and are never cached.
