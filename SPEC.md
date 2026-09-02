@@ -100,6 +100,11 @@ it will be the norm.
 
 ## 4. Pipeline stages
 
+All stage outputs, sbwsz cache entries, regenerated descriptions, and UI state
+files are written through the shared atomic storage helpers: prepare a flushed
+temporary sibling, then replace the destination with `os.replace`. A failed
+write preserves the previous complete file and removes its temporary file.
+
 ### 4.1 Parse — `parse.py`
 
 Read the TCGPlayer export. Normalize columns. **Expand rows where
@@ -565,6 +570,7 @@ Jetmir's Garden
   - ✓ `parse.py` — TCGPlayer export → `rows.json`
   - ✓ `enrich.py` — sbwsz lookups with 4-tier fallback, name-match verification;
     803/808 Chinese names, 704/808 JHS prices
+  - ✓ `storage.py` — shared atomic persistence for pipeline and UI files
   - ✓ `ui.py` — manual photo binding, dual-price selection, approval state
     machine, HEIC→JPEG export (stages 1–6)
   - ✓ `describe.py` — templated 4-line description with treatment-aware

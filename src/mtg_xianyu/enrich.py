@@ -20,6 +20,8 @@ from pathlib import Path
 import httpx
 from rapidfuzz import fuzz, process
 
+from mtg_xianyu.storage import atomic_write_json
+
 BASE_URL = "https://mtgch.com/api/v1"
 USER_AGENT = "mtg-xianyu/0.1 (https://github.com/Azraelpha/mtg-xianyu)"
 SETS_TTL = 7 * 24 * 3600   # seconds before the set list is re-fetched
@@ -62,8 +64,7 @@ def _read_cache(path: Path) -> dict | list | None:
 
 
 def _write_cache(path: Path, data: dict | list) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_json(path, data)
 
 
 def _read_fresh_card_cache(path: Path) -> dict | list | None:
@@ -550,8 +551,7 @@ def main() -> None:
     results = _assign_row_ids(results)
 
     out = Path(args.output)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(results, indent=2, ensure_ascii=False), encoding="utf-8")
+    atomic_write_json(out, results)
     print(f"wrote {total} rows → {out}")
 
     print(f"\nname_zh outcomes ({total} rows):")

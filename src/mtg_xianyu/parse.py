@@ -7,10 +7,11 @@ stages must never see multi-quantity rows. Writes rows.json.
 
 import argparse
 import csv
-import json
 import math
 import sys
 from pathlib import Path
+
+from mtg_xianyu.storage import atomic_write_json
 
 # Zip magic bytes — Numbers files are zip archives regardless of extension.
 _ZIP_MAGIC = b"PK\x03\x04"
@@ -181,11 +182,7 @@ def main() -> None:
     rows = _normalize(raw)
 
     out = Path(args.output)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(
-        json.dumps(rows, indent=2, ensure_ascii=False, allow_nan=False),
-        encoding="utf-8",
-    )
+    atomic_write_json(out, rows)
 
     expanded = len(rows) - source_count
     suffix = f" ({expanded:+d} from quantity expansion)" if expanded else ""

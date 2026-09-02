@@ -65,6 +65,7 @@ directly from Python. See SPEC §8.
 │   ├── enrich.py      # enrichment pipeline: expiring cache + safe set match
 │   ├── match.py       # stub — NOT BUILT; manual photo binding in ui.py instead
 │   ├── price.py       # stub — NOT BUILT; dual-price logic lives in ui.py instead
+│   ├── storage.py     # shared atomic UTF-8 text/JSON persistence
 │   ├── describe.py    # treatment-aware finish_zh + 4-line Xianyu description
 │   └── ui.py          # Streamlit workflow (photo bind, dual-price selection,
 │                      #   HEIC→JPEG export, approval gates, state machine)
@@ -148,6 +149,9 @@ from existing `.json` listings (e.g., after updating the treatment mappings).
   never allow API or export values to introduce path separators or `..`.
 - Stages must remain re-runnable from disk state. Each stage reads its input
   and writes its output; no in-memory state passes between stages.
+- Persistent JSON and text outputs use the shared atomic writers in
+  `storage.py`; never write directly to a final pipeline, cache, description,
+  or UI-state path.
 - After Claude Code completes a multi-part task, verify each item against the
   original prompt before approving. Coding agents are lossy on tail items.
 - State mutations in Streamlit (button clicks, `on_change` callbacks that write

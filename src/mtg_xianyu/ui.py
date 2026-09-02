@@ -24,6 +24,7 @@ from pillow_heif import register_heif_opener
 import streamlit as st
 
 from mtg_xianyu.describe import build_description, build_finish_zh
+from mtg_xianyu.storage import atomic_write_json, prepare_text_file
 
 register_heif_opener()  # enable HEIC support for PIL.Image.open()
 
@@ -86,25 +87,7 @@ def _load_state() -> dict:
 
 
 def _save_state(state: dict) -> None:
-    STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(state, indent=2, ensure_ascii=False, allow_nan=False)
-    tmp_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=STATE_PATH.parent,
-            prefix=f".{STATE_PATH.name}.",
-            delete=False,
-        ) as tmp:
-            tmp.write(payload)
-            tmp.flush()
-            os.fsync(tmp.fileno())
-            tmp_path = Path(tmp.name)
-        os.replace(tmp_path, STATE_PATH)
-    finally:
-        if tmp_path is not None:
-            tmp_path.unlink(missing_ok=True)
+    atomic_write_json(STATE_PATH, state)
 
 
 def _ensure_row(state: dict, row_id: str) -> None:
@@ -484,21 +467,6 @@ def _jpg_path_for(listing: dict, listings_dir: Path | None = None) -> Path:
     return candidate
 
 
-def _prepare_text_file(target: Path, payload: str) -> Path:
-    """Write and fsync a temporary sibling for a future atomic replace."""
-    with tempfile.NamedTemporaryFile(
-        "w",
-        encoding="utf-8",
-        dir=target.parent,
-        prefix=f".{target.name}.",
-        delete=False,
-    ) as tmp:
-        tmp.write(payload)
-        tmp.flush()
-        os.fsync(tmp.fileno())
-        return Path(tmp.name)
-
-
 def _write_listing_artifacts(
     listing: dict,
     photo_path: str,
@@ -533,12 +501,12 @@ def _write_listing_artifacts(
         with jpg_tmp.open("rb") as prepared_jpg:
             os.fsync(prepared_jpg.fileno())
 
-        json_tmp = _prepare_text_file(
+        json_tmp = prepare_text_file(
             json_path,
             json.dumps(listing, indent=2, ensure_ascii=False, allow_nan=False),
         )
         temp_paths.append(json_tmp)
-        txt_tmp = _prepare_text_file(txt_path, build_description(listing))
+        txt_tmp = prepare_text_file(txt_path, build_description(listing))
         temp_paths.append(txt_tmp)
 
         for temp_path, final_path in zip(temp_paths, final_paths, strict=True):

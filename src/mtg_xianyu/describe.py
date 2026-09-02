@@ -13,6 +13,8 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
+from mtg_xianyu.storage import atomic_write_text
+
 SHOP_POLICY = "主页满300包邮"
 
 VISUAL_TREATMENTS: dict[str, str] = {
@@ -118,7 +120,7 @@ def main() -> None:
     for path in listing_files:
         listing = json.loads(path.read_text(encoding="utf-8"))
         desc = build_description(listing)
-        path.with_suffix(".txt").write_text(desc, encoding="utf-8")
+        atomic_write_text(path.with_suffix(".txt"), desc)
         written += 1
 
         _, suffixes = _extract_suffixes(listing["name_en"])

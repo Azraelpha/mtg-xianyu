@@ -27,6 +27,7 @@ _src = Path(__file__).parent.parent / "src"
 if str(_src) not in sys.path:
     sys.path.insert(0, str(_src))
 
+from mtg_xianyu.storage import atomic_write_json  # noqa: E402
 from mtg_xianyu.ui import _jpg_path_for  # noqa: E402
 
 LISTINGS_DIR = Path("data/listings")
@@ -121,10 +122,7 @@ def main() -> None:
 
         try:
             listing["photo_jpg"] = str(new_path)
-            json_path.write_text(
-                json.dumps(listing, indent=2, ensure_ascii=False),
-                encoding="utf-8",
-            )
+            atomic_write_json(json_path, listing)
         except Exception as exc:
             # File is already renamed; record the inconsistency so the user
             # knows which JSON needs a manual photo_jpg fix.
