@@ -422,7 +422,16 @@ skipped ──[re-bind + re-price]──► ready_to_review
 ```
 
 Per-row state persisted in `state.json`:
-`{state, photo_path, name_zh_override, price_cny, price_source, approved_at}`
+`{state, photo_path, name_zh_override, price_cny, price_source, price_error,
+approved_at}`
+
+On load, the UI validates `enriched.json` structure and unique `row_id` values,
+then validates `state.json` types, states, price sources, and cross-field price
+consistency. Missing fields introduced by newer UI versions are backfilled and
+saved atomically. Invalid files are left untouched and surfaced as actionable
+errors in the page instead of being silently reset. State rows from an older
+dataset are preserved but excluded from current progress counts and photo-pool
+bindings.
 
 **Layout:**
 
@@ -517,6 +526,7 @@ saves. `scan.py` pays off on the *next* batch.
       "name_zh_override": "str | null",
       "price_cny": "float | null",
       "price_source": "jhs | usd_converted | manual | null",
+      "price_error": "str | null",
       "approved_at": "2026-06-06T19:59:20 | null"
     }
   }

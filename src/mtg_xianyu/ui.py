@@ -40,6 +40,24 @@ _PHOTO_EXTS = (
     "*.jpg", "*.jpeg", "*.JPG", "*.JPEG",
     "*.png", "*.PNG",
 )
+_ROW_STATES = {"waiting_photo", "ready_to_review", "approved", "skipped"}
+_PRICE_SOURCES = {"jhs", "usd_converted", "manual"}
+_REQUIRED_ENRICHED_STRINGS = (
+    "row_id",
+    "name_en",
+    "set_name_en",
+    "collector_number",
+    "condition",
+    "printing",
+)
+_NULLABLE_ENRICHED_STRINGS = (
+    "name_zh",
+    "set_code",
+    "set_name_zh",
+    "sbwsz_image_uri",
+    "rarity",
+    "tcg_photo_url",
+)
 
 
 # ── pure helpers (testable without Streamlit) ─────────────────────────────────
@@ -79,11 +97,133 @@ def _filter_rows(rows: list[dict], state: dict, view: str) -> list[dict]:
 
 # ── state I/O ─────────────────────────────────────────────────────────────────
 
+def _new_row_entry() -> dict:
+    return {
+        "state": "waiting_photo",
+        "photo_path": None,
+        "name_zh_override": None,
+        "price_cny": None,
+        "price_source": None,
+        "price_error": None,
+        "approved_at": None,
+    }
+
+
+def _is_finite_nonnegative_number(value: object) -> bool:
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, (int, float))
+        and math.isfinite(value)
+        and value >= 0
+    )
+
+
+def _validate_and_migrate_state(state: object, path: Path) -> tuple[dict, bool]:
+    """Validate state.json and backfill fields added by newer UI versions."""
+    if not isinstance(state, dict):
+        raise ValueError(
+            f"invalid UI state {path}: expected a JSON object, "
+            f"got {type(state).__name__}"
+        )
+
+    changed = False
+    if "rows" not in state:
+        state["rows"] = {}
+        changed = True
+    rows = state["rows"]
+    if not isinstance(rows, dict):
+        raise ValueError(
+            f"invalid UI state {path}: 'rows' must be an object, "
+            f"got {type(rows).__name__}"
+        )
+
+    if "fx_rate" not in state:
+        state["fx_rate"] = FX_RATE
+        changed = True
+    fx_rate = state["fx_rate"]
+    if not _is_finite_nonnegative_number(fx_rate) or fx_rate == 0:
+        raise ValueError(
+            f"invalid UI state {path}: 'fx_rate' must be a finite positive "
+            f"number, got {fx_rate!r}"
+        )
+
+    defaults = _new_row_entry()
+    for row_id, entry in rows.items():
+        if not isinstance(row_id, str) or not row_id:
+            raise ValueError(
+                f"invalid UI state {path}: row IDs must be non-empty strings"
+            )
+        if not isinstance(entry, dict):
+            raise ValueError(
+                f"invalid UI state {path}: row {row_id!r} must be an object, "
+                f"got {type(entry).__name__}"
+            )
+        if "state" not in entry:
+            raise ValueError(
+                f"invalid UI state {path}: row {row_id!r} is missing 'state'"
+            )
+        for field, default in defaults.items():
+            if field not in entry:
+                entry[field] = default
+                changed = True
+
+        row_state = entry["state"]
+        if not isinstance(row_state, str) or row_state not in _ROW_STATES:
+            raise ValueError(
+                f"invalid UI state {path}: row {row_id!r} has unknown state "
+                f"{row_state!r}"
+            )
+        for field in ("photo_path", "name_zh_override", "price_error", "approved_at"):
+            value = entry[field]
+            if value is not None and not isinstance(value, str):
+                raise ValueError(
+                    f"invalid UI state {path}: row {row_id!r} field {field!r} "
+                    f"must be a string or null, got {type(value).__name__}"
+                )
+        price = entry["price_cny"]
+        if price is not None and not _is_finite_nonnegative_number(price):
+            raise ValueError(
+                f"invalid UI state {path}: row {row_id!r} field 'price_cny' "
+                f"must be a finite non-negative number or null, got {price!r}"
+            )
+        price_source = entry["price_source"]
+        if price_source is not None and (
+            not isinstance(price_source, str) or price_source not in _PRICE_SOURCES
+        ):
+            raise ValueError(
+                f"invalid UI state {path}: row {row_id!r} has unknown "
+                f"price_source {price_source!r}"
+            )
+        if price_source is not None and price is None:
+            raise ValueError(
+                f"invalid UI state {path}: row {row_id!r} has price_source "
+                f"{price_source!r} but no price_cny"
+            )
+        if price is not None and price_source is None:
+            raise ValueError(
+                f"invalid UI state {path}: row {row_id!r} has price_cny "
+                "but no price_source"
+            )
+        if row_state == "approved" and not entry["approved_at"]:
+            raise ValueError(
+                f"invalid UI state {path}: approved row {row_id!r} is missing "
+                "'approved_at'"
+            )
+    return state, changed
+
+
 def _load_state() -> dict:
-    """Read state.json. Returns empty structure if file doesn't exist."""
-    if STATE_PATH.exists():
-        return json.loads(STATE_PATH.read_text(encoding="utf-8"))
-    return {"fx_rate": FX_RATE, "rows": {}}
+    """Read, validate, and safely migrate state.json."""
+    if not STATE_PATH.exists():
+        return {"fx_rate": FX_RATE, "rows": {}}
+    try:
+        raw_state = json.loads(STATE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"cannot load UI state {STATE_PATH}: {exc}") from exc
+    state, changed = _validate_and_migrate_state(raw_state, STATE_PATH)
+    if changed:
+        _save_state(state)
+    return state
 
 
 def _save_state(state: dict) -> None:
@@ -93,15 +233,7 @@ def _save_state(state: dict) -> None:
 def _ensure_row(state: dict, row_id: str) -> None:
     """Add a default entry for row_id if it isn't already in state."""
     if row_id not in state.setdefault("rows", {}):
-        state["rows"][row_id] = {
-            "state": "waiting_photo",
-            "photo_path": None,
-            "name_zh_override": None,
-            "price_cny": None,
-            "price_source": None,
-            "price_error": None,
-            "approved_at": None,
-        }
+        state["rows"][row_id] = _new_row_entry()
 
 
 def _init_rows(state: dict, all_rows: list[dict]) -> bool:
@@ -120,6 +252,19 @@ def _init_rows(state: dict, all_rows: list[dict]) -> bool:
 
 def _row_state(state: dict, row_id: str) -> str:
     return state.get("rows", {}).get(row_id, {}).get("state", "waiting_photo")
+
+
+def _progress_counts(all_rows: list[dict], state: dict) -> tuple[int, int, int]:
+    """Count current-dataset states, ignoring preserved rows from older data."""
+    current_ids = {row["row_id"] for row in all_rows}
+    current_entries = [
+        entry
+        for row_id, entry in state.get("rows", {}).items()
+        if row_id in current_ids
+    ]
+    approved = sum(1 for entry in current_entries if entry["state"] == "approved")
+    skipped = sum(1 for entry in current_entries if entry["state"] == "skipped")
+    return approved, skipped, len(all_rows) - approved - skipped
 
 
 def _set_row_state(state: dict, row_id: str, **fields) -> None:
@@ -141,19 +286,22 @@ def _scan_photos() -> list[Path]:
     return sorted(photos, key=lambda p: p.name)
 
 
-def _build_unbound_pool(state: dict) -> list[Path]:
-    """Return photos not yet bound to any row."""
+def _build_unbound_pool(
+    state: dict, active_row_ids: set[str] | None = None
+) -> list[Path]:
+    """Return photos not bound to a current-dataset row."""
     bound = {
         Path(r["photo_path"])
-        for r in state.get("rows", {}).values()
+        for row_id, r in state.get("rows", {}).items()
         if r.get("photo_path")
+        and (active_row_ids is None or row_id in active_row_ids)
     }
     return [p for p in _scan_photos() if p not in bound]
 
 
-def _refresh_pool(state: dict) -> None:
+def _refresh_pool(state: dict, active_row_ids: set[str]) -> None:
     """Re-scan photos and rebuild the unbound pool."""
-    st.session_state.unbound_pool = _build_unbound_pool(state)
+    st.session_state.unbound_pool = _build_unbound_pool(state, active_row_ids)
     st.session_state.thumbnail_page = 0
 
 
@@ -287,12 +435,80 @@ def _on_price_override_change(row_id: str) -> None:
 
 # ── data loading ──────────────────────────────────────────────────────────────
 
+def _validate_enriched_rows(data: object, path: Path) -> list[dict]:
+    if not isinstance(data, list):
+        raise ValueError(
+            f"invalid enriched data {path}: expected a JSON array, "
+            f"got {type(data).__name__}"
+        )
+
+    seen_ids: set[str] = set()
+    for idx, row in enumerate(data):
+        if not isinstance(row, dict):
+            raise ValueError(
+                f"invalid enriched data {path}: row {idx} must be an object, "
+                f"got {type(row).__name__}"
+            )
+        ref = f"enriched row {idx} ({row.get('name_en', '?')!r})"
+        for field in _REQUIRED_ENRICHED_STRINGS:
+            value = row.get(field)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(
+                    f"invalid {ref}: {field!r} must be a non-empty string, "
+                    f"got {value!r}"
+                )
+        row_id = row["row_id"]
+        if row_id in seen_ids:
+            raise ValueError(
+                f"invalid {ref}: duplicate row_id {row_id!r} would share UI state"
+            )
+        seen_ids.add(row_id)
+
+        product_id = row.get("product_id")
+        if (
+            isinstance(product_id, bool)
+            or not isinstance(product_id, int)
+            or product_id < 1
+        ):
+            raise ValueError(
+                f"invalid {ref}: 'product_id' must be a positive integer, "
+                f"got {product_id!r}"
+            )
+        if row["printing"] not in {"Normal", "Foil"}:
+            raise ValueError(
+                f"invalid {ref}: 'printing' must be 'Normal' or 'Foil', "
+                f"got {row['printing']!r}"
+            )
+        for field in _NULLABLE_ENRICHED_STRINGS:
+            if field not in row:
+                raise ValueError(f"invalid {ref}: missing field {field!r}")
+            value = row[field]
+            if value is not None and not isinstance(value, str):
+                raise ValueError(
+                    f"invalid {ref}: {field!r} must be a string or null, "
+                    f"got {type(value).__name__}"
+                )
+        for field in ("jihuanshe_price_cny", "usd_market"):
+            if field not in row:
+                raise ValueError(f"invalid {ref}: missing field {field!r}")
+            value = row[field]
+            if value is not None and not _is_finite_nonnegative_number(value):
+                raise ValueError(
+                    f"invalid {ref}: {field!r} must be a finite non-negative "
+                    f"number or null, got {value!r}"
+                )
+    return data
+
+
 @st.cache_data
-def _load_enriched() -> list[dict]:
-    path = Path("data/enriched.json")
+def _load_enriched(path: Path = Path("data/enriched.json")) -> list[dict]:
     if not path.exists():
         return []
-    return json.loads(path.read_text(encoding="utf-8"))
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"cannot load enriched data {path}: {exc}") from exc
+    return _validate_enriched_rows(data, path)
 
 
 # ── approval readiness ───────────────────────────────────────────────────────
@@ -585,14 +801,30 @@ def _render_app() -> None:
         )
 
     # ── load enriched data ────────────────────────────────────────────────────
-    all_rows = _load_enriched()
+    try:
+        all_rows = _load_enriched()
+    except ValueError as exc:
+        st.error(f"Cannot load review data: {exc}")
+        st.caption(
+            "Regenerate data/enriched.json with mtg-enrich, then restart the UI."
+        )
+        return
     if not all_rows:
         st.error("data/enriched.json not found. Run mtg-enrich first.")
         return
+    active_row_ids = {row["row_id"] for row in all_rows}
 
     # ── init state (once per session; re-init on page refresh) ───────────────
     if "state" not in st.session_state:
-        state = _load_state()
+        try:
+            state = _load_state()
+        except ValueError as exc:
+            st.error(f"Cannot load review state: {exc}")
+            st.caption(
+                "Fix data/listings/state.json or restore it from backup; "
+                "the file was not overwritten."
+            )
+            return
         if _init_rows(state, all_rows):
             _save_state(state)
         st.session_state.state = state
@@ -602,10 +834,7 @@ def _render_app() -> None:
     # ── sidebar progress indicator ────────────────────────────────────────────
     with st.sidebar:
         st.divider()
-        _all_states = list(state.get("rows", {}).values())
-        n_approved  = sum(1 for r in _all_states if r.get("state") == "approved")
-        n_skipped   = sum(1 for r in _all_states if r.get("state") == "skipped")
-        n_remaining = len(all_rows) - n_approved - n_skipped
+        n_approved, n_skipped, n_remaining = _progress_counts(all_rows, state)
         st.markdown(
             f"Progress: **{n_approved}** of {len(all_rows)} approved · "
             f"**{n_skipped}** skipped · **{n_remaining}** remaining"
@@ -615,7 +844,7 @@ def _render_app() -> None:
 
     # ── init photo pool (once per session) ───────────────────────────────────
     if "unbound_pool" not in st.session_state:
-        st.session_state.unbound_pool = _build_unbound_pool(state)
+        st.session_state.unbound_pool = _build_unbound_pool(state, active_row_ids)
         st.session_state.thumbnail_page = 0
 
     # ── rebuild display list ──────────────────────────────────────────────────
@@ -927,7 +1156,7 @@ def _render_app() -> None:
         st.markdown(f"**Unbound photos (pool: {len(pool)})**")
     with pool_btn:
         if st.button("↻ Refresh", key="refresh_pool", use_container_width=True):
-            _refresh_pool(state)
+            _refresh_pool(state, active_row_ids)
             st.rerun()
 
     if not pool:

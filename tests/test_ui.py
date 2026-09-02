@@ -1,15 +1,165 @@
+import json
+from pathlib import Path
+
+import pytest
+
+from mtg_xianyu import ui
 from mtg_xianyu.ui import (
     FX_RATE,
     _approval_hints,
+    _build_unbound_pool,
     _build_listing,
     _filter_rows,
     _jpg_path_for,
     _next_unfinished_idx,
+    _progress_counts,
     _resolve_final_price_and_source,
     _safe_name_en,
+    _validate_enriched_rows,
     effective_cny,
     sort_rows,
 )
+
+
+def _enriched_row(**overrides):
+    row = {
+        "row_id": "12345_0",
+        "product_id": 12345,
+        "name_en": "Lightning Bolt",
+        "name_zh": "闪电击",
+        "set_code": "M10",
+        "set_name_en": "Magic 2010",
+        "set_name_zh": "核心系列2010",
+        "collector_number": "146",
+        "condition": "Near Mint",
+        "printing": "Normal",
+        "rarity": "Common",
+        "jihuanshe_price_cny": 12.5,
+        "usd_market": 2.0,
+        "sbwsz_image_uri": "https://example.test/card.jpg",
+        "tcg_photo_url": "https://example.test/tcg.jpg",
+    }
+    return {**row, **overrides}
+
+
+# ── persisted UI-data boundaries ──────────────────────────────────────────────
+
+def test_validate_enriched_rows_accepts_canonical_data(tmp_path):
+    rows = [_enriched_row()]
+    assert _validate_enriched_rows(rows, tmp_path / "enriched.json") == rows
+
+
+@pytest.mark.parametrize(
+    ("data", "message"),
+    [
+        ({"not": "a list"}, "expected a JSON array"),
+        (["not an object"], "row 0 must be an object"),
+        ([_enriched_row(row_id="")], "'row_id' must be a non-empty string"),
+        ([_enriched_row(usd_market="2.00")], "'usd_market'.*finite"),
+    ],
+)
+def test_validate_enriched_rows_rejects_malformed_data(tmp_path, data, message):
+    with pytest.raises(ValueError, match=message):
+        _validate_enriched_rows(data, tmp_path / "enriched.json")
+
+
+def test_validate_enriched_rows_rejects_duplicate_ids(tmp_path):
+    rows = [_enriched_row(), _enriched_row(name_en="Counterspell")]
+    with pytest.raises(ValueError, match="duplicate row_id '12345_0'"):
+        _validate_enriched_rows(rows, tmp_path / "enriched.json")
+
+
+def test_load_enriched_reports_invalid_json_with_path(tmp_path):
+    path = tmp_path / "enriched.json"
+    path.write_text("not json", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"cannot load enriched data .*enriched\.json"):
+        ui._load_enriched(path)
+
+
+def test_load_state_migrates_missing_legacy_fields_atomically(tmp_path, monkeypatch):
+    path = tmp_path / "state.json"
+    path.write_text(json.dumps({
+        "fx_rate": FX_RATE,
+        "rows": {"12345_0": {
+            "state": "ready_to_review",
+            "photo_path": "data/mtg_photos/card.heic",
+        }},
+    }), encoding="utf-8")
+    monkeypatch.setattr(ui, "STATE_PATH", path)
+
+    state = ui._load_state()
+
+    entry = state["rows"]["12345_0"]
+    assert entry["photo_path"] == "data/mtg_photos/card.heic"
+    assert entry["price_error"] is None
+    assert entry["price_cny"] is None
+    assert json.loads(path.read_text(encoding="utf-8")) == state
+    assert list(tmp_path.iterdir()) == [path]
+
+
+@pytest.mark.parametrize(
+    ("entry", "message"),
+    [
+        ({"state": "mystery"}, "unknown state 'mystery'"),
+        ({"state": ["ready_to_review"]}, "unknown state"),
+        ({"state": "ready_to_review", "price_cny": -1}, "price_cny.*finite"),
+        (
+            {"state": "ready_to_review", "price_cny": 10, "price_source": ["jhs"]},
+            "unknown price_source",
+        ),
+        (
+            {"state": "ready_to_review", "price_cny": 10, "price_source": None},
+            "price_cny but no price_source",
+        ),
+        ({"state": "approved"}, "approved row.*approved_at"),
+    ],
+)
+def test_load_state_rejects_invalid_rows_without_overwriting(
+    tmp_path, monkeypatch, entry, message
+):
+    path = tmp_path / "state.json"
+    original = json.dumps({"fx_rate": FX_RATE, "rows": {"12345_0": entry}})
+    path.write_text(original, encoding="utf-8")
+    monkeypatch.setattr(ui, "STATE_PATH", path)
+
+    with pytest.raises(ValueError, match=message):
+        ui._load_state()
+
+    assert path.read_text(encoding="utf-8") == original
+
+
+def test_load_state_reports_invalid_json_without_overwriting(tmp_path, monkeypatch):
+    path = tmp_path / "state.json"
+    path.write_text("not json", encoding="utf-8")
+    monkeypatch.setattr(ui, "STATE_PATH", path)
+
+    with pytest.raises(ValueError, match=r"cannot load UI state .*state\.json"):
+        ui._load_state()
+
+    assert path.read_text(encoding="utf-8") == "not json"
+
+
+def test_progress_counts_ignore_stale_state_rows():
+    rows = [_enriched_row(row_id="current_0"), _enriched_row(row_id="current_1")]
+    state = {"rows": {
+        "current_0": {"state": "approved"},
+        "current_1": {"state": "waiting_photo"},
+        "stale_0": {"state": "approved"},
+        "stale_1": {"state": "skipped"},
+    }}
+    assert _progress_counts(rows, state) == (1, 0, 1)
+
+
+def test_unbound_pool_ignores_stale_state_bindings(tmp_path, monkeypatch):
+    current_photo = tmp_path / "current.heic"
+    stale_photo = tmp_path / "stale.heic"
+    monkeypatch.setattr(ui, "_scan_photos", lambda: [current_photo, stale_photo])
+    state = {"rows": {
+        "current_0": {"photo_path": str(current_photo)},
+        "stale_0": {"photo_path": str(stale_photo)},
+    }}
+
+    assert _build_unbound_pool(state, {"current_0"}) == [stale_photo]
 
 
 # ── effective_cny ─────────────────────────────────────────────────────────────

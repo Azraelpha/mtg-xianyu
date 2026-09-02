@@ -160,6 +160,9 @@ from existing `.json` listings (e.g., after updating the treatment mappings).
 - State mutations in Streamlit (button clicks, `on_change` callbacks that write
   `state.json`) need an explicit `st.rerun()` after, or the UI shows
   one-click-behind state.
+- Validate `enriched.json` and `state.json` before rendering. Migrate missing
+  legacy state fields atomically, but never replace structurally invalid state;
+  stale row IDs are preserved and ignored by current progress/photo-pool logic.
 - `_approval_hints` in `ui.py` is the single source of truth for "is this row
   approvable." Both the visual hint area and the Approve button's `disabled`
   state read from it. Never duplicate that logic elsewhere.
