@@ -19,7 +19,10 @@ _original_approval_hints = _impl._approval_hints
 def _approval_hints(row: dict, row_entry: dict) -> list[tuple[str, str]]:
     """Add unresolved-set identity to the existing approval gate."""
     hints = _original_approval_hints(row, row_entry)
-    if not row.get("set_code"):
+    # Production enriched rows always contain set_code.  Treat an explicit
+    # null as unresolved while keeping the helper usable with minimal test or
+    # integration dictionaries that predate this field.
+    if "set_code" in row and not row.get("set_code"):
         hints = [(msg, level) for msg, level in hints if level != "success"]
         hints.append(("⚠ Set identity is unresolved; fix enrichment before approving", "warning"))
     return hints

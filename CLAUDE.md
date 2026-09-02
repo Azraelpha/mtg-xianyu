@@ -62,17 +62,19 @@ directly from Python. See SPEC §8.
 ├── pyproject.toml
 ├── src/mtg_xianyu/
 │   ├── parse.py       # TCGPlayer export → normalized rows (expands multi-qty)
-│   ├── enrich.py      # sbwsz lookups: Chinese names, set names, image, prices
+│   ├── enrich.py      # public enrichment layer: expiring cache + safe set match
+│   ├── _enrich_impl.py# enrichment pipeline implementation
 │   ├── match.py       # stub — NOT BUILT; manual photo binding in ui.py instead
 │   ├── price.py       # stub — NOT BUILT; dual-price logic lives in ui.py instead
 │   ├── describe.py    # treatment-aware finish_zh + 4-line Xianyu description
-│   └── ui.py          # Streamlit review/edit/approve interface (photo bind,
+│   ├── ui.py          # public UI layer: approval gates + safe auto-advance
+│   └── _ui_impl.py    # Streamlit workflow implementation (photo bind,
 │                      #   dual-price selection, HEIC→JPEG export, state machine)
 ├── data/
 │   ├── mtg_photos/    # user photos in HEIC (gitignored)
 │   ├── cache/
 │   │   └── sbwsz/
-│   │       ├── cards/     # per-card responses, keyed by set/number (gitignored)
+│   │       ├── cards/     # URL-keyed responses with 24-hour TTL (gitignored)
 │   │       └── sets.json  # set list with fetched_at timestamp (gitignored)
 │   ├── rows.json          # parse.py output (gitignored)
 │   ├── enriched.json      # enrich.py output (gitignored)
@@ -126,8 +128,9 @@ from existing `.json` listings (e.g., after updating the treatment mappings).
 - Set a descriptive `User-Agent` on every sbwsz request, identifying the tool
   and a contact. Space requests ≥100 ms apart. sbwsz is community-run; be
   respectful.
-- Cache every sbwsz response under `data/cache/sbwsz/`, keyed by request URL.
-  Card data is effectively immutable; price data carries a timestamp.
+- Cache every sbwsz response under `data/cache/sbwsz/`, keyed by the full
+  request URL including query parameters. Card responses contain mutable price
+  data, carry a timestamp, and expire after 24 hours.
 - Treat the **TCGPlayer export** as authoritative for: card identity, finish
   (Normal/Foil), condition, USD market price, quantity.
 - Treat **sbwsz** as authoritative for: Chinese card name, Chinese set name,
@@ -136,10 +139,11 @@ from existing `.json` listings (e.g., after updating the treatment mappings).
   Jihuanshe-derived). Display both and let the user pick. Never show only one.
 - Every module that gets built lands with a corresponding test file under
   `tests/test_<module>.py` in the same commit. Never commit without tests.
-- Parse-stage validation is fail-fast: any field that downstream stages need as
-  a non-null key (collector number, set name, condition, finish) must raise
-  ValueError with a row reference. Fields that downstream stages can handle as
-  null pass through with a log line.
+- Parse-stage validation is fail-fast: quantity and product ID must be positive
+  integers; product ID, card name, collector number, set name, condition, and
+  finish must be present; finish must be Normal or Foil. Failures raise
+  ValueError with a row reference. Fields downstream can handle as null pass
+  through with a log line.
 - Cache keys are derived from the full request URL including query string. Two
   URLs with the same path but different query parameters are different cache
   entries.

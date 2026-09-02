@@ -130,7 +130,9 @@ Output `rows.json` — a list of:
 ```
 
 Validation is fail-fast for fields downstream stages require as non-null keys
-(`collector_number`, `set_name_en`, `condition`, `printing`). Fields that
+(`product_id`, `name_en`, `collector_number`, `set_name_en`, `condition`,
+`printing`). Quantity and product ID must be positive integers, and printing
+must be `Normal` or `Foil`; failures name the source row. Fields that
 downstream stages can handle as null (`usd_market`, optional descriptive fields)
 pass through with a log line.
 
@@ -162,9 +164,13 @@ than 7 days.
 
 **Per row.** `GET /api/v1/card/{set_code}/{collector_number}/?view=1`. The
 `?view=1` parameter is **required** — the bare endpoint omits `prices.cny` and
-the `versions` array entirely. Persist the response to
-`data/cache/sbwsz/cards/{set_code}/{number}.json` keyed on the full URL
-including query string (no TTL — card data is immutable).
+the `versions` array entirely. Persist the response under
+`data/cache/sbwsz/cards/{set_code}/` with a readable collector-number prefix
+and a SHA-256 digest of the full URL, including its query string. Card cache
+entries use the envelope
+`{"_cache_kind": "card_response_v1", "fetched_at": ..., "data": ...}` and
+expire after 24 hours because the response contains mutable Jihuanshe prices.
+Legacy untimestamped entries are refreshed once rather than trusted.
 
 Relevant fields per card entry and how they map to our canonical shape:
 
@@ -207,8 +213,11 @@ return float(raw)   # "17.27" → 17.27
 3. /result?q=name:"{name_en}"&priority_chinese=true&unique=oracle_id
      Search for any printing of the card; accept first item whose "name" field
      matches name_en exactly (case-insensitive); take atomic_official_name or
-     atomic_translated_name. Leave jihuanshe_price_cny and sbwsz_image_uri null
-     — they belong to the matched printing, not the row's printing.
+     atomic_translated_name. When tier 1 failed identity verification, leave
+     jihuanshe_price_cny and sbwsz_image_uri null because they may belong to a
+     different card. When tier 1 found the correct printing but lacked a
+     Chinese name, retain that printing's price and English image and borrow
+     only the Chinese name.
      ↓ (no exact-name match, or no Chinese name in any result)
 4. null — surface gap in UI for manual entry.
 ```
@@ -216,8 +225,9 @@ return float(raw)   # "17.27" → 17.27
 **Name-match verification (primary path, tier 1).** A HTTP 200 response from
 `/card/{set}/{number}/` does **not** guarantee the returned card is the one you
 asked for — collector_number conflicts between TCGPlayer and sbwsz can return a
-real-but-wrong card. `_get_card` verifies `faces[0].name` against the requested
-row's `name_en` before accepting the result. Without this step, ~35 rows
+real-but-wrong card. The enrichment layer verifies `faces[0].name` against the
+requested row's `name_en` before accepting the result; an absent face name also
+fails closed. Without this step, ~35 rows
 silently returned wrong-card data (discovered in v0.4 when a user noticed
 Solitude displaying Grief's Chinese name).
 
@@ -413,10 +423,11 @@ Per-row state persisted in `state.json`:
     `state.json`, overrides sbwsz `name_zh`).
   - Two price columns (JHS CNY | USD-converted) each with a "Use this" button
     and the current value displayed.
-  - Manual price override number input.
-  - Approval hint area: blocking hints in orange (missing price, missing
-    Chinese name) or informational hints in blue (which default price will be
-    used), or a green "Ready to approve" confirmation.
+  - Manual price override input; values must be finite and non-negative.
+  - Approval hint area: blocking hints in orange (missing/invalid price,
+    missing Chinese name, unresolved set, or missing bound photo) or
+    informational hints in blue (which default price will be used), or a green
+    "Ready to approve" confirmation.
   - Action buttons (state-aware):
     - **Approve**: primary button; disabled when approval hints block; absent on
       approved rows (replaced by `✓ Approved on {date}` + description code
@@ -439,15 +450,17 @@ Per-row state persisted in `state.json`:
 6. Write `{row_id}.json` (listing dict as JSON).
 7. Write `{row_id}.txt` (`build_description(listing)` output).
 8. Update `state["rows"][row_id]` in-memory: `state="approved"`, `approved_at=ts`, `price_cny`, `price_source`.
-9. `_save_state(state)` — flush to disk.
+9. `_save_state(state)` — write a flushed sibling temporary file and atomically
+   replace `state.json`, so interruption cannot leave truncated workflow state.
 10. Auto-advance to next `ready_to_review` row; set `_all_caught_up` flag if
     none remain.
 
 **Approval gating.** `_approval_hints(row, row_entry)` is the **single source
 of truth** for whether a row is approvable. It collects all blocking conditions
-independently (missing Chinese name, unresolvable price) and all informational
-hints (which default price will be auto-applied). Both the hint display area and
-the Approve button's `disabled` state read from it — no duplicated logic.
+independently (missing Chinese name, unresolved set, missing photo, invalid or
+unresolvable price) and all informational hints (which default price will be
+auto-applied). Both the hint display area and the Approve button's `disabled`
+state read from it — no duplicated logic.
 
 **Streamlit footgun.** State mutations (JHS button, USD button, manual price
 override, name override) need an explicit `st.rerun()` call immediately after

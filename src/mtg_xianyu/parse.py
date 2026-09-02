@@ -8,6 +8,7 @@ stages must never see multi-quantity rows. Writes rows.json.
 import argparse
 import csv
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -62,9 +63,10 @@ def _float(val) -> float | None:
     if val is None:
         return None
     try:
-        return float(str(val).replace("$", "").replace(",", "").strip())
+        result = float(str(val).replace("$", "").replace(",", "").strip())
     except ValueError:
         return None
+    return result if math.isfinite(result) and result >= 0 else None
 
 
 def _collector_number(val) -> str:
@@ -79,15 +81,41 @@ def _collector_number(val) -> str:
     if val is None:
         return ""
     if isinstance(val, (int, float)):
-        return str(int(val))
+        number = float(val)
+        if not math.isfinite(number):
+            return ""
+        return str(int(number)) if number.is_integer() else str(val).strip()
     s = str(val).strip()
     try:
-        return str(int(float(s)))
+        number = float(s)
+        if math.isfinite(number) and number.is_integer():
+            return str(int(number))
+        return s
     except ValueError:
         return s
 
 
-_REQUIRED_FIELDS = ("collector_number", "set_name_en", "condition", "printing")
+_REQUIRED_FIELDS = (
+    "product_id",
+    "name_en",
+    "collector_number",
+    "set_name_en",
+    "condition",
+    "printing",
+)
+
+
+def _positive_int(val, field: str, ref: str, *, default: int | None = None) -> int:
+    text = _str(val)
+    if not text and default is not None:
+        return default
+    try:
+        number = float(text)
+    except ValueError as exc:
+        raise ValueError(f"{field!r} must be a positive integer in {ref}: {val!r}") from exc
+    if not math.isfinite(number) or not number.is_integer() or number < 1:
+        raise ValueError(f"{field!r} must be a positive integer in {ref}: {val!r}")
+    return int(number)
 
 
 def _normalize(raw_rows: list[dict]) -> list[dict]:
@@ -96,11 +124,11 @@ def _normalize(raw_rows: list[dict]) -> list[dict]:
         if "Magic" not in _str(raw.get("Product Line")):
             continue
 
-        qty_val = raw.get("Add to Quantity")
-        qty = max(1, int(float(str(qty_val))) if qty_val is not None else 1)
-
-        product_id_val = raw.get("Product ID")
-        product_id = int(float(str(product_id_val))) if product_id_val else 0
+        ref = f"source row {idx} ({_str(raw.get('Product Name'))!r})"
+        qty = _positive_int(
+            raw.get("Add to Quantity"), "Add to Quantity", ref, default=1
+        )
+        product_id = _positive_int(raw.get("Product ID"), "Product ID", ref)
 
         row = {
             "product_id": product_id,
@@ -114,10 +142,14 @@ def _normalize(raw_rows: list[dict]) -> list[dict]:
             "tcg_photo_url": _str(raw.get("Photo URL")),
         }
 
-        ref = f"source row {idx} ({row['name_en']!r})"
         for field in _REQUIRED_FIELDS:
             if not row[field]:
                 raise ValueError(f"{field!r} is empty in {ref}")
+        if row["printing"] not in {"Normal", "Foil"}:
+            raise ValueError(
+                f"'printing' must be 'Normal' or 'Foil' in {ref}: "
+                f"{row['printing']!r}"
+            )
 
         for _ in range(qty):
             result.append(dict(row))
@@ -150,7 +182,10 @@ def main() -> None:
 
     out = Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(rows, indent=2, ensure_ascii=False))
+    out.write_text(
+        json.dumps(rows, indent=2, ensure_ascii=False, allow_nan=False),
+        encoding="utf-8",
+    )
 
     expanded = len(rows) - source_count
     suffix = f" ({expanded:+d} from quantity expansion)" if expanded else ""

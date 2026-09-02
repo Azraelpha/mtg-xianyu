@@ -37,6 +37,7 @@ def _card(**overrides) -> dict:
         "translation_info": {"name_source": "官方中文"},
         "faces": [
             {
+                "name": "Lightning Bolt",
                 "image_uris": {"normal": "https://example.com/img.jpg"},
                 "zhs_image_uris": {"normal": "https://example.com/zhs.jpg"},
             }

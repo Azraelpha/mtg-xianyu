@@ -20,8 +20,6 @@ dependencies = [
 [project.scripts]
 mtg-parse    = "mtg_xianyu.parse:main"
 mtg-enrich   = "mtg_xianyu.enrich:main"
-mtg-match    = "mtg_xianyu.match:main"
-mtg-price    = "mtg_xianyu.price:main"
 mtg-describe = "mtg_xianyu.describe:main"
 
 [dependency-groups]

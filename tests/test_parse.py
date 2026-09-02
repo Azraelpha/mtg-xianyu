@@ -82,3 +82,24 @@ def test_missing_set_name_raises():
 def test_missing_condition_raises():
     with pytest.raises(ValueError, match="condition"):
         _normalize([_row(**{"Condition": None})])
+
+
+@pytest.mark.parametrize("qty", [0, -1, 1.5, "abc", float("nan")])
+def test_invalid_quantity_raises_with_row_context(qty):
+    with pytest.raises(ValueError, match=r"Add to Quantity.*source row 0"):
+        _normalize([_row(**{"Add to Quantity": qty})])
+
+
+def test_missing_product_id_raises():
+    with pytest.raises(ValueError, match="Product ID"):
+        _normalize([_row(**{"Product ID": None})])
+
+
+def test_missing_card_name_raises():
+    with pytest.raises(ValueError, match="name_en"):
+        _normalize([_row(**{"Product Name": ""})])
+
+
+def test_unknown_printing_raises():
+    with pytest.raises(ValueError, match="printing"):
+        _normalize([_row(Printing="Etched")])

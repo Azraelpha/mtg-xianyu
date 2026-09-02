@@ -11,8 +11,11 @@ Must be run from the project root so that relative data/ paths resolve.
 
 import io
 import json
+import math
+import os
 import re
 import subprocess
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -84,7 +87,24 @@ def _load_state() -> dict:
 
 def _save_state(state: dict) -> None:
     STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    STATE_PATH.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
+    payload = json.dumps(state, indent=2, ensure_ascii=False, allow_nan=False)
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=STATE_PATH.parent,
+            prefix=f".{STATE_PATH.name}.",
+            delete=False,
+        ) as tmp:
+            tmp.write(payload)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+            tmp_path = Path(tmp.name)
+        os.replace(tmp_path, STATE_PATH)
+    finally:
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
 
 
 def _ensure_row(state: dict, row_id: str) -> None:
@@ -96,6 +116,7 @@ def _ensure_row(state: dict, row_id: str) -> None:
             "name_zh_override": None,
             "price_cny": None,
             "price_source": None,
+            "price_error": None,
             "approved_at": None,
         }
 
@@ -223,6 +244,18 @@ def _load_display_image(path_str: str) -> bytes:
     return buf.getvalue()
 
 
+@st.cache_data
+def _photo_can_open(path_str: str, mtime_ns: int) -> bool:
+    """Return whether Pillow can decode the current version of a photo."""
+    del mtime_ns  # included in the cache key so replacing a file invalidates it
+    try:
+        with Image.open(path_str) as img:
+            img.verify()
+        return True
+    except (OSError, ValueError):
+        return False
+
+
 # ── on_change callbacks ───────────────────────────────────────────────────────
 
 def _on_name_change(row_id: str) -> None:
@@ -234,19 +267,37 @@ def _on_name_change(row_id: str) -> None:
     st.rerun()
 
 
+def _parse_manual_price(value: str) -> float:
+    """Parse a finite, non-negative CNY amount or raise a useful error."""
+    try:
+        price = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Price must be a number") from exc
+    if not math.isfinite(price):
+        raise ValueError("Price must be finite")
+    if price < 0:
+        raise ValueError("Price cannot be negative")
+    return price
+
+
 def _on_price_override_change(row_id: str) -> None:
     val = st.session_state.get(f"price_override_{row_id}", "").strip()
     state = st.session_state.state
     _ensure_row(state, row_id)
     if val:
         try:
-            state["rows"][row_id]["price_cny"] = float(val)
+            state["rows"][row_id]["price_cny"] = _parse_manual_price(val)
             state["rows"][row_id]["price_source"] = "manual"
-        except ValueError:
-            pass  # keep existing state if input isn't a valid number
-    elif state["rows"][row_id].get("price_source") == "manual":
-        state["rows"][row_id]["price_cny"] = None
-        state["rows"][row_id]["price_source"] = None
+            state["rows"][row_id]["price_error"] = None
+        except ValueError as exc:
+            state["rows"][row_id]["price_cny"] = None
+            state["rows"][row_id]["price_source"] = None
+            state["rows"][row_id]["price_error"] = str(exc)
+    else:
+        if state["rows"][row_id].get("price_source") == "manual":
+            state["rows"][row_id]["price_cny"] = None
+            state["rows"][row_id]["price_source"] = None
+        state["rows"][row_id]["price_error"] = None
     _save_state(state)
     st.rerun()
 
@@ -275,7 +326,9 @@ def _approval_hints(row: dict, row_entry: dict) -> list[tuple[str, str]]:
     jhs = row.get("jihuanshe_price_cny")
     usd = row.get("usd_market")
 
-    if price_cny is None:
+    if row_entry.get("price_error"):
+        hints.append((f"⚠ Invalid manual price: {row_entry['price_error']}", "warning"))
+    elif price_cny is None:
         if jhs is not None:
             hints.append((
                 f"✓ Price will default to JHS ¥{jhs:.2f} (or click Use this to confirm)",
@@ -294,6 +347,14 @@ def _approval_hints(row: dict, row_entry: dict) -> list[tuple[str, str]]:
     if not name_zh_override and not row.get("name_zh"):
         hints.append(("⚠ Add a Chinese name before approving", "warning"))
 
+    if "photo_path" in row_entry:
+        photo_path = row_entry.get("photo_path")
+        path = Path(photo_path) if photo_path else None
+        if path is None or not path.is_file():
+            hints.append(("⚠ Bind an existing photo before approving", "warning"))
+        elif not _photo_can_open(str(path), path.stat().st_mtime_ns):
+            hints.append(("⚠ Bound photo is unreadable; bind another photo", "warning"))
+
     if not hints:
         hints.append(("✓ Ready to approve", "success"))
 
@@ -311,14 +372,22 @@ def _resolve_final_price_and_source(
     Raises ValueError only if no price is available at all (should be
     unreachable when Approve is enabled, since the hint blocks it).
     """
+    if state_row.get("price_error"):
+        raise ValueError(
+            f"Invalid manual price for row {row.get('row_id')}: "
+            f"{state_row['price_error']}"
+        )
     if state_row.get("price_source") is not None:
-        return state_row["price_cny"], state_row["price_source"]
+        return (
+            _parse_manual_price(str(state_row.get("price_cny"))),
+            state_row["price_source"],
+        )
     jhs = row.get("jihuanshe_price_cny")
     if jhs is not None:
-        return jhs, "jhs"
+        return _parse_manual_price(str(jhs)), "jhs"
     usd = row.get("usd_market")
     if usd is not None:
-        return round(usd * fx_rate, 2), "usd_converted"
+        return _parse_manual_price(str(round(usd * fx_rate, 2))), "usd_converted"
     raise ValueError(f"No price available for row {row.get('row_id')}")
 
 
@@ -410,7 +479,8 @@ def _do_approve(row: dict, row_id: str, state: dict) -> None:
     )
 
     (LISTINGS_DIR / f"{row_id}.json").write_text(
-        json.dumps(listing, indent=2, ensure_ascii=False), encoding="utf-8"
+        json.dumps(listing, indent=2, ensure_ascii=False, allow_nan=False),
+        encoding="utf-8",
     )
     (LISTINGS_DIR / f"{row_id}.txt").write_text(
         build_description(listing), encoding="utf-8"
@@ -422,6 +492,7 @@ def _do_approve(row: dict, row_id: str, state: dict) -> None:
         "approved_at": ts,
         "price_cny": listing["price_cny"],
         "price_source": listing["price_source"],
+        "price_error": None,
     })
     _save_state(state)
 
@@ -657,7 +728,9 @@ def _render_app() -> None:
             jhs_btn = "▶ Active" if jhs_active else "Use this ✓"
             if st.button(jhs_btn, key=f"use_jhs_{row_id}",
                          disabled=(jhs is None), use_container_width=True):
-                _set_row_state(state, row_id, price_cny=jhs, price_source="jhs")
+                _set_row_state(
+                    state, row_id, price_cny=jhs, price_source="jhs", price_error=None
+                )
                 st.rerun()
 
         with usd_col:
@@ -672,8 +745,13 @@ def _render_app() -> None:
             usd_btn = "▶ Active" if usd_active else "Use this ✓"
             if st.button(usd_btn, key=f"use_usd_{row_id}",
                          disabled=(usd is None), use_container_width=True):
-                _set_row_state(state, row_id, price_cny=round(usd * FX_RATE, 2),
-                               price_source="usd_converted")
+                _set_row_state(
+                    state,
+                    row_id,
+                    price_cny=round(usd * FX_RATE, 2),
+                    price_source="usd_converted",
+                    price_error=None,
+                )
                 st.rerun()
 
         st.markdown("---")

@@ -7,6 +7,8 @@ branch stays easy to audit/revert.  This module tightens three behaviours:
 - PLST slash-resolution caches use the same freshness policy.
 """
 
+import hashlib
+import re
 import sys
 import time
 
@@ -76,10 +78,18 @@ def _write_card_cache(path, data: dict) -> None:
     })
 
 
+def _url_cache_path(kind: str, url: str, *display_parts: str):
+    """Return a readable cache path whose identity includes the full URL."""
+    digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
+    leaf = f"{display_parts[-1]}__{digest}" if display_parts else digest
+    parents = display_parts[:-1]
+    return _cache_path(kind, *parents, leaf)
+
+
 def _get_card(client: httpx.Client, set_code: str, number: str) -> dict:
     """Fetch one printing, refreshing mutable JHS price data every 24 hours."""
     url = f"{BASE_URL}/card/{set_code}/{number}/?view=1"
-    path = _cache_path("cards", set_code, number)
+    path = _url_cache_path("cards", url, set_code, number)
     cached = _read_fresh_card_cache(path)
     if cached is not None:
         return cached
@@ -100,6 +110,61 @@ def _get_card(client: httpx.Client, set_code: str, number: str) -> dict:
 _impl._get_card = _get_card
 
 
+def _search_card_by_name(
+    client: httpx.Client,
+    name_en: str,
+) -> dict | None:
+    """Borrow a Chinese name using a full-URL, expiring cache key."""
+    bare_name = _strip_parenthetical(name_en)
+    search_url = str(httpx.URL(f"{BASE_URL}/result", params={
+        "q": f'name:"{bare_name}"',
+        "priority_chinese": "true",
+        "unique": "oracle_id",
+        "view": "0",
+        "page_size": "50",
+    }))
+    safe_name = re.sub(r"[^\w\-]", "_", bare_name) or "unnamed"
+    path = _url_cache_path("cards", search_url, "_name_search", safe_name)
+    cached = _read_fresh_card_cache(path)
+    if cached is not None:
+        return None if cached.get("_no_match") else cached
+
+    try:
+        data = _fetch(client, search_url)
+    except httpx.HTTPStatusError as exc:
+        print(
+            f"[name-search] {name_en!r}: HTTP {exc.response.status_code}",
+            file=sys.stderr,
+        )
+        return None
+    except Exception as exc:
+        print(f"[name-search] {name_en!r}: {exc}", file=sys.stderr)
+        return None
+
+    items = data.get("items") if isinstance(data, dict) else []
+    base_name = bare_name.casefold()
+    for item in items or []:
+        if item.get("name", "").casefold() != base_name:
+            continue
+        zh_name = item.get("atomic_official_name") or item.get("atomic_translated_name")
+        if not zh_name:
+            continue
+        result = {
+            "name_zh": zh_name,
+            "is_official": bool(item.get("atomic_official_name")),
+            "set": item.get("set", ""),
+            "collector_number": item.get("collector_number", ""),
+        }
+        _write_card_cache(path, result)
+        return result
+
+    _write_card_cache(path, {"_no_match": True})
+    return None
+
+
+_impl._search_card_by_name = _search_card_by_name
+
+
 def _resolve_plst_slash(
     client: httpx.Client,
     collector_number: str,
@@ -109,7 +174,13 @@ def _resolve_plst_slash(
     """Resolve slash-format PLST numbers without pinning stale JHS prices forever."""
     num_str, total_str = collector_number.split("/", 1)
     num = str(int(num_str))
-    path = _cache_path("cards", "PLST_slash", f"{num}_{total_str}")
+    resolution_url = (
+        f"{BASE_URL}/internal/plst-resolution/{num}/{total_str}"
+        f"?name={name_en}"
+    )
+    path = _url_cache_path(
+        "cards", resolution_url, "PLST_slash", f"{num}_{total_str}"
+    )
     cached = _read_fresh_card_cache(path)
     if cached is not None:
         if cached.get("_exhausted"):
@@ -173,6 +244,7 @@ _impl._resolve_set_code = _resolve_set_code
 globals().update({
     "_fetch": _fetch,
     "_get_card": _get_card,
+    "_search_card_by_name": _search_card_by_name,
     "_resolve_plst_slash": _resolve_plst_slash,
     "_resolve_set_code": _resolve_set_code,
 })

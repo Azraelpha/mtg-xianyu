@@ -9,6 +9,7 @@ data/*.json
 data/photos/
 data/mtg_photos/
 data/cache/
+data/listings/
 
 # Belt-and-suspenders: any image file anywhere under data/
 data/**/*.heic

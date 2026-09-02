@@ -358,16 +358,20 @@ def _enrich_row(
         card = _get_card(client, set_code, cn)
         if card:
             face_name = ((card.get("faces") or [{}])[0]).get("name", "")
-            if face_name:
-                if not (_normalize_for_compare(row["name_en"]) & _normalize_for_compare(face_name)):
-                    print(
-                        f"[wrong-card] {set_code}/{cn}: asked for "
-                        f"{row['name_en']!r}, got {face_name!r} — treating as miss",
-                        file=sys.stderr,
-                    )
-                    if stats is not None:
-                        stats["primary_lookup_wrong_card"] += 1
-                    card = {}
+            verified = bool(face_name) and bool(
+                _normalize_for_compare(row["name_en"])
+                & _normalize_for_compare(face_name)
+            )
+            if not verified:
+                detail = f"got {face_name!r}" if face_name else "response had no face name"
+                print(
+                    f"[wrong-card] {set_code}/{cn}: asked for "
+                    f"{row['name_en']!r}, {detail} — treating as miss",
+                    file=sys.stderr,
+                )
+                if stats is not None:
+                    stats["primary_lookup_wrong_card"] += 1
+                card = {}
 
     if not card:
         borrowed = _search_card_by_name(client, row["name_en"])
@@ -391,6 +395,18 @@ def _enrich_row(
             "jihuanshe_price_cny": None,
         }
 
+    borrowed = None
+    if not card.get("primary_name"):
+        borrowed = _search_card_by_name(client, row["name_en"])
+        if borrowed:
+            if stats is not None:
+                stats["borrowed_printing"] += 1
+            if name_search_log is not None:
+                name_search_log.append({
+                    "name_en": row["name_en"],
+                    "borrowed_from": f"{borrowed['set']}/{borrowed['collector_number']}",
+                })
+
     jhs = _jihuanshe_price(card)
     name_source = (card.get("translation_info") or {}).get("name_source", "")
     has_name = bool(card.get("primary_name"))
@@ -408,11 +424,11 @@ def _enrich_row(
             stats["jhs_null"] += 1
 
     face = (card.get("faces") or [{}])[0]
-    image_uri = (face.get("zhs_image_uris") or face.get("image_uris") or {}).get("normal")
+    image_uri = (face.get("image_uris") or face.get("zhs_image_uris") or {}).get("normal")
 
     return {
         **row,
-        "name_zh": _name_zh(card),
+        "name_zh": _name_zh(card) or (borrowed["name_zh"] if borrowed else None),
         "set_code": set_code,
         "set_name_zh": code_to_zh.get(set_code),
         "sbwsz_image_uri": image_uri,
