@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
@@ -178,7 +179,7 @@ def test_auto_advance_reindexes_after_current_row_leaves_filtered_view(monkeypat
         "c": {"state": "ready_to_review"},
     }}
     monkeypatch.setattr(
-        ui._impl,
+        ui,
         "st",
         SimpleNamespace(session_state={"_applied_view": "Remaining only"}),
     )
@@ -263,14 +264,102 @@ def test_manual_price_rejects_unsafe_values(value):
 def test_state_write_is_atomic_on_replace_failure(tmp_path, monkeypatch):
     state_path = tmp_path / "state.json"
     state_path.write_text('{"old": true}', encoding="utf-8")
-    monkeypatch.setattr(ui._impl, "STATE_PATH", state_path)
+    monkeypatch.setattr(ui, "STATE_PATH", state_path)
 
     def fail_replace(source, destination):
         raise OSError("simulated replace failure")
 
-    monkeypatch.setattr(ui._impl.os, "replace", fail_replace)
+    monkeypatch.setattr(ui.os, "replace", fail_replace)
     with pytest.raises(OSError, match="simulated"):
         ui._save_state({"new": True})
 
     assert json.loads(state_path.read_text(encoding="utf-8")) == {"old": True}
     assert list(tmp_path.iterdir()) == [state_path]
+
+
+def _approval_fixture(tmp_path):
+    photo = tmp_path / "source.png"
+    Image.new("RGB", (4, 4), "blue").save(photo)
+    row = {
+        "row_id": "1_0",
+        "product_id": 1,
+        "name_en": "Test Card",
+        "name_zh": "测试牌",
+        "set_code": "TST",
+        "set_name_en": "Test Set",
+        "set_name_zh": "测试系列",
+        "collector_number": "1",
+        "condition": "Near Mint",
+        "printing": "Normal",
+        "rarity": "Common",
+        "jihuanshe_price_cny": 10.0,
+        "usd_market": 2.0,
+    }
+    state = {"rows": {"1_0": {
+        "state": "ready_to_review",
+        "photo_path": str(photo),
+        "name_zh_override": None,
+        "price_cny": 10.0,
+        "price_source": "jhs",
+        "price_error": None,
+        "approved_at": None,
+    }}}
+    return row, state
+
+
+def test_approval_installs_complete_artifact_set_and_persists_state(
+    tmp_path, monkeypatch
+):
+    row, state = _approval_fixture(tmp_path)
+    listings = tmp_path / "listings"
+    monkeypatch.setattr(ui, "LISTINGS_DIR", listings)
+    monkeypatch.setattr(ui, "STATE_PATH", listings / "state.json")
+
+    ui._do_approve(row, "1_0", state)
+
+    listing = json.loads((listings / "1_0.json").read_text(encoding="utf-8"))
+    assert Path(listing["photo_jpg"]).is_file()
+    assert (listings / "1_0.txt").read_text(encoding="utf-8")
+    assert state["rows"]["1_0"]["state"] == "approved"
+    persisted = json.loads((listings / "state.json").read_text(encoding="utf-8"))
+    assert persisted["rows"]["1_0"]["state"] == "approved"
+    assert not any(path.name.startswith(".") for path in listings.iterdir())
+
+
+def test_approval_artifact_install_rolls_back_partial_replace(tmp_path, monkeypatch):
+    row, state = _approval_fixture(tmp_path)
+    listings = tmp_path / "listings"
+    listings.mkdir()
+    monkeypatch.setattr(ui, "LISTINGS_DIR", listings)
+    monkeypatch.setattr(ui, "STATE_PATH", listings / "state.json")
+    real_replace = ui.os.replace
+
+    def fail_json_replace(source, destination):
+        if str(destination).endswith("1_0.json"):
+            raise OSError("simulated artifact replace failure")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(ui.os, "replace", fail_json_replace)
+    with pytest.raises(OSError, match="artifact replace"):
+        ui._do_approve(row, "1_0", state)
+
+    assert state["rows"]["1_0"]["state"] == "ready_to_review"
+    assert list(listings.iterdir()) == []
+
+
+def test_approval_rolls_back_artifacts_when_state_save_fails(tmp_path, monkeypatch):
+    row, state = _approval_fixture(tmp_path)
+    listings = tmp_path / "listings"
+    listings.mkdir()
+    monkeypatch.setattr(ui, "LISTINGS_DIR", listings)
+    monkeypatch.setattr(ui, "STATE_PATH", listings / "state.json")
+
+    def fail_state_save(_state):
+        raise OSError("simulated state failure")
+
+    monkeypatch.setattr(ui, "_save_state", fail_state_save)
+    with pytest.raises(OSError, match="state failure"):
+        ui._do_approve(row, "1_0", state)
+
+    assert state["rows"]["1_0"]["state"] == "ready_to_review"
+    assert list(listings.iterdir()) == []

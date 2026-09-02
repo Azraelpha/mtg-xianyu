@@ -446,13 +446,16 @@ Per-row state persisted in `state.json`:
    `(copy {N})`.
 3. Update `listing["photo_jpg"]` to the resolved path.
 4. `LISTINGS_DIR.mkdir(...)` — ensure directory exists.
-5. `Image.open(photo_path).convert("RGB").save(jpg_path, format="JPEG", quality=90)` — HEIC → JPEG.
-6. Write `{row_id}.json` (listing dict as JSON).
-7. Write `{row_id}.txt` (`build_description(listing)` output).
-8. Update `state["rows"][row_id]` in-memory: `state="approved"`, `approved_at=ts`, `price_cny`, `price_source`.
-9. `_save_state(state)` — write a flushed sibling temporary file and atomically
-   replace `state.json`, so interruption cannot leave truncated workflow state.
-10. Auto-advance to next `ready_to_review` row; set `_all_caught_up` flag if
+5. Prepare the JPEG, `{row_id}.json`, and `{row_id}.txt` as flushed temporary
+   sibling files without changing the visible listing set.
+6. Atomically install all three prepared artifacts with `os.replace`. If any
+   install fails, remove every artifact installed by this attempt and leave the
+   row ready for review.
+7. Update `state["rows"][row_id]` in-memory: `state="approved"`, `approved_at=ts`, `price_cny`, `price_source`.
+8. `_save_state(state)` — write a flushed sibling temporary file and atomically
+   replace `state.json`. If it fails, restore the previous in-memory row state
+   and remove the new listing artifacts.
+9. Auto-advance to next `ready_to_review` row; set `_all_caught_up` flag if
     none remain.
 
 **Approval gating.** `_approval_hints(row, row_entry)` is the **single source

@@ -62,14 +62,12 @@ directly from Python. See SPEC §8.
 ├── pyproject.toml
 ├── src/mtg_xianyu/
 │   ├── parse.py       # TCGPlayer export → normalized rows (expands multi-qty)
-│   ├── enrich.py      # public enrichment layer: expiring cache + safe set match
-│   ├── _enrich_impl.py# enrichment pipeline implementation
+│   ├── enrich.py      # enrichment pipeline: expiring cache + safe set match
 │   ├── match.py       # stub — NOT BUILT; manual photo binding in ui.py instead
 │   ├── price.py       # stub — NOT BUILT; dual-price logic lives in ui.py instead
 │   ├── describe.py    # treatment-aware finish_zh + 4-line Xianyu description
-│   ├── ui.py          # public UI layer: approval gates + safe auto-advance
-│   └── _ui_impl.py    # Streamlit workflow implementation (photo bind,
-│                      #   dual-price selection, HEIC→JPEG export, state machine)
+│   └── ui.py          # Streamlit workflow (photo bind, dual-price selection,
+│                      #   HEIC→JPEG export, approval gates, state machine)
 ├── data/
 │   ├── mtg_photos/    # user photos in HEIC (gitignored)
 │   ├── cache/
