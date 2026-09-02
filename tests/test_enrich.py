@@ -691,6 +691,26 @@ def test_assign_row_ids_does_not_mutate_input():
     assert "row_id" not in rows[0]  # original untouched
 
 
+def test_assign_row_ids_are_stable_when_variants_are_reordered():
+    foil = {
+        "product_id": 99,
+        "name_en": "Test Card",
+        "set_name_en": "Test Set",
+        "collector_number": "1",
+        "printing": "Foil",
+        "condition": "Near Mint",
+    }
+    normal = {**foil, "printing": "Normal"}
+
+    forward = _assign_row_ids([foil, normal])
+    reversed_result = _assign_row_ids([normal, foil])
+
+    forward_ids = {row["printing"]: row["row_id"] for row in forward}
+    reversed_ids = {row["printing"]: row["row_id"] for row in reversed_result}
+    assert forward_ids == reversed_ids == {"Foil": "99_0", "Normal": "99_1"}
+    assert [row["printing"] for row in reversed_result] == ["Normal", "Foil"]
+
+
 # ── _normalize_for_compare ────────────────────────────────────────────────────
 
 def test_normalize_basic():

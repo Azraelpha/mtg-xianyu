@@ -149,6 +149,9 @@ from existing `.json` listings (e.g., after updating the treatment mappings).
 - Enrich-stage disk input is revalidated before network access. Malformed cache
   entries degrade to cache misses; malformed live sbwsz response shapes fail
   with the endpoint in the error and are never cached.
+- Row IDs are assigned during enrichment. For rows sharing a TCGPlayer product
+  ID, suffix order is derived from card identity fields rather than export order
+  so foil, non-foil, and condition variants cannot exchange persisted UI state.
 - Cache keys are derived from the full request URL including query string. Two
   URLs with the same path but different query parameters are different cache
   entries. Human-readable cache path components are bounded and sanitized;

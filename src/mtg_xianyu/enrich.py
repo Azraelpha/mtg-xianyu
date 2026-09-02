@@ -746,21 +746,45 @@ def _enrich_row(
 
 # ── row ID assignment ─────────────────────────────────────────────────────────
 
+_ROW_IDENTITY_FIELDS = (
+    "name_en",
+    "set_name_en",
+    "collector_number",
+    "printing",
+    "condition",
+)
+
+
+def _row_identity_key(row: dict) -> tuple[str, ...]:
+    """Return stable fields that distinguish variants sharing a product ID."""
+    return tuple(str(row.get(field) or "").strip() for field in _ROW_IDENTITY_FIELDS)
+
+
 def _assign_row_ids(rows: list[dict]) -> list[dict]:
     """Inject a stable row_id ({product_id}_{n}) into each row.
 
-    n is the 0-indexed copy number within rows sharing the same product_id,
-    in input order — handles the qty-expansion case where one TCGPlayer line
-    becomes multiple physical-card rows.
+    Rows sharing a product_id are ranked by authoritative identity fields so
+    heterogeneous variants retain their suffixes if the export is reordered.
+    Exact duplicate copies are interchangeable and keep their input order.
+    The returned list itself remains in the original input order.
     """
-    counts: dict[int, int] = {}
-    result = []
-    for row in rows:
-        pid = row.get("product_id", 0)
-        n = counts.get(pid, 0)
-        result.append({**row, "row_id": f"{pid}_{n}"})
-        counts[pid] = n + 1
-    return result
+    indices_by_product: dict[int, list[int]] = {}
+    for idx, row in enumerate(rows):
+        indices_by_product.setdefault(row.get("product_id", 0), []).append(idx)
+
+    copy_number_by_index: dict[int, int] = {}
+    for indices in indices_by_product.values():
+        ranked = sorted(indices, key=lambda idx: (_row_identity_key(rows[idx]), idx))
+        for copy_number, idx in enumerate(ranked):
+            copy_number_by_index[idx] = copy_number
+
+    return [
+        {
+            **row,
+            "row_id": f"{row.get('product_id', 0)}_{copy_number_by_index[idx]}",
+        }
+        for idx, row in enumerate(rows)
+    ]
 
 
 # ── entry point ───────────────────────────────────────────────────────────────

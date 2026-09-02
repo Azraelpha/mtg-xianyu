@@ -111,17 +111,10 @@ Read the TCGPlayer export. Normalize columns. **Expand rows where
 `Add to Quantity > 1` into one logical row per physical card.** Downstream
 stages must not have to think about quantity.
 
-**Row ID scheme.** Each expanded row gets a stable `row_id` of the form
-`"{product_id}_{n}"` where `n` is a zero-based index distinguishing multiple
-physical copies of the same product (e.g. `276329_0` and `276329_1` for two
-copies of Imperial Seal). The `row_id` is stable across re-parses of the same
-export — it is derived deterministically, not randomly.
-
 Output `rows.json` — a list of:
 
 ```json
 {
-  "row_id": "276329_0",
   "product_id": 276329,
   "set_name_en": "Double Masters 2022",
   "name_en": "Imperial Seal (Borderless)",
@@ -152,6 +145,14 @@ of canonical row objects. Required identifiers and strings must be present,
 `product_id` must be a positive integer, `printing` must be `Normal` or `Foil`,
 and `usd_market` must be null or a finite non-negative number. Errors name the
 input row index and card so the source record is immediately identifiable.
+
+**Row ID scheme.** Enrichment adds a stable `row_id` of the form
+`"{product_id}_{n}"`, where `n` distinguishes rows sharing a TCGPlayer product
+ID. Because foil, non-foil, and condition variants can share that ID, suffixes
+are assigned by name, set, collector number, printing, and condition rather
+than export order. Reordering the same logical rows therefore cannot transfer
+persisted UI state between variants. Exact duplicate copies are interchangeable;
+their relative input order breaks the tie. Enriched output retains input order.
 
 Malformed or structurally stale cache envelopes are treated as cache misses
 and refetched. Live sets, card, and search responses are validated before use;
