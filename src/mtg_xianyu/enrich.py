@@ -32,6 +32,7 @@ RATE_DELAY = 0.5            # minimum seconds between live requests
 _CACHE_COMPONENT_MAX = 96
 _URL_CACHE_READABLE_MAX = 64
 _UNSAFE_CACHE_CHARS_RE = re.compile(r"[^A-Za-z0-9._-]+")
+_NOT_FOUND_CACHE_KEY = "_not_found"
 
 _last_request_at: float = 0.0
 
@@ -372,6 +373,8 @@ def _get_card(client: httpx.Client, set_code: str, number: str) -> dict:
     path = _url_cache_path("cards", url, set_code, number)
     cached = _read_fresh_card_cache(path)
     if cached is not None:
+        if cached.get(_NOT_FOUND_CACHE_KEY) is True:
+            return {}
         try:
             return _validate_card_response(cached, f"cache {path}")
         except ValueError:
@@ -381,6 +384,7 @@ def _get_card(client: httpx.Client, set_code: str, number: str) -> dict:
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == 404:
             print(f"[404] {set_code}/{number} not in sbwsz — enrichment fields will be null", file=sys.stderr)
+            _write_card_cache(path, {_NOT_FOUND_CACHE_KEY: True})
             return {}
         raise
     _write_card_cache(path, data)

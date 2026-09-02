@@ -317,6 +317,45 @@ def test_404_returns_null_enrichment(capsys):
 
 # ── network / cache behaviour ──────────────────────────────────────────────────
 
+def test_404_card_lookup_is_cached_for_the_ttl():
+    class _404Transport(httpx.BaseTransport):
+        def __init__(self):
+            self.calls = 0
+
+        def handle_request(self, request: httpx.Request) -> httpx.Response:
+            self.calls += 1
+            return httpx.Response(404)
+
+    transport = _404Transport()
+    client = httpx.Client(transport=transport, headers={"User-Agent": "test"})
+    url = f"{BASE_URL}/card/MH3/999/?view=1"
+    path = enrich._url_cache_path("cards", url, "MH3", "999")
+
+    assert enrich._get_card(client, "MH3", "999") == {}
+    assert enrich._get_card(client, "MH3", "999") == {}
+
+    assert transport.calls == 1
+    cached = json.loads(path.read_text(encoding="utf-8"))
+    assert cached["data"] == {"_not_found": True}
+
+
+def test_expired_404_card_cache_is_refetched():
+    url = f"{BASE_URL}/card/MH3/146/?view=1"
+    path = enrich._url_cache_path("cards", url, "MH3", "146")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "_cache_kind": "card_response_v1",
+        "fetched_at": time.time() - enrich.CARD_CACHE_TTL - 1,
+        "data": {"_not_found": True},
+    }), encoding="utf-8")
+    client, transport = _make_client({url: _card()})
+
+    result = enrich._get_card(client, "MH3", "146")
+
+    assert result["primary_name"] == "闪电击"
+    assert transport.calls == [url]
+
+
 def test_view_1_in_cached_url():
     routes = {"https://mtgch.com/api/v1/card/MH3/146/?view=1": _card()}
     client, transport = _make_client(routes)

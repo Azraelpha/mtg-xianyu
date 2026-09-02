@@ -129,7 +129,9 @@ from existing `.json` listings (e.g., after updating the treatment mappings).
   respectful.
 - Cache every sbwsz response under `data/cache/sbwsz/`, keyed by the full
   request URL including query parameters. Card responses contain mutable price
-  data, carry a timestamp, and expire after 24 hours.
+  data, carry a timestamp, and expire after 24 hours. Cache card 404s with an
+  explicit negative sentinel under the same TTL so misses are not re-requested
+  on every run.
 - Treat the **TCGPlayer export** as authoritative for: card identity, finish
   (Normal/Foil), condition, USD market price, quantity.
 - Treat **sbwsz** as authoritative for: Chinese card name, Chinese set name,
