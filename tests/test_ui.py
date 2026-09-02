@@ -164,9 +164,26 @@ def test_unbound_pool_ignores_stale_state_bindings(tmp_path, monkeypatch):
     assert _build_unbound_pool(state, {"current_0"}) == [stale_photo]
 
 
-# ── effective_cny ─────────────────────────────────────────────────────────────
+# ── photo-pool identity ───────────────────────────────────────────────────────
 
-# Approved-row immutability
+def test_duplicate_photo_basenames_have_distinct_widget_keys(tmp_path):
+    first = tmp_path / "batch-a" / "IMG_0001.HEIC"
+    second = tmp_path / "batch-b" / "IMG_0001.HEIC"
+
+    assert ui._photo_widget_key(first) == ui._photo_widget_key(first)
+    assert ui._photo_widget_key(first) != ui._photo_widget_key(second)
+
+
+def test_duplicate_photo_basenames_show_relative_paths(tmp_path, monkeypatch):
+    monkeypatch.setattr(ui, "PHOTO_DIR", tmp_path)
+    first = tmp_path / "batch-a" / "IMG_0001.HEIC"
+    second = tmp_path / "batch-b" / "IMG_0001.HEIC"
+
+    assert ui._photo_display_label(first) == "batch-a/IMG_0001.HEIC"
+    assert ui._photo_display_label(second) == "batch-b/IMG_0001.HEIC"
+
+
+# ── approved-row immutability ─────────────────────────────────────────────────
 
 @pytest.mark.parametrize(
     "mutation",
@@ -206,7 +223,7 @@ def test_approved_rows_reject_widget_callbacks(monkeypatch, callback):
     assert state == original
 
 
-# effective_cny
+# ── effective_cny ─────────────────────────────────────────────────────────────
 
 def test_effective_cny_uses_jhs_when_present():
     assert effective_cny({"jihuanshe_price_cny": 42.5, "usd_market": 10.0}) == 42.5

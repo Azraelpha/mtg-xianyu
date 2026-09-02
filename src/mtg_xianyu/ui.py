@@ -9,6 +9,7 @@ Run with:
 Must be run from the project root so that relative data/ paths resolve.
 """
 
+import hashlib
 import io
 import json
 import math
@@ -290,7 +291,24 @@ def _scan_photos() -> list[Path]:
     photos: set[Path] = set()
     for ext in _PHOTO_EXTS:
         photos.update(PHOTO_DIR.rglob(ext))
-    return sorted(photos, key=lambda p: p.name)
+    return sorted(
+        photos,
+        key=lambda p: (p.name.casefold(), p.resolve().as_posix()),
+    )
+
+
+def _photo_widget_key(photo_path: Path) -> str:
+    """Return a stable Streamlit key derived from the photo's complete path."""
+    identity = photo_path.resolve().as_posix().encode("utf-8")
+    return f"bind_{hashlib.sha256(identity).hexdigest()}"
+
+
+def _photo_display_label(photo_path: Path) -> str:
+    """Show a pool-relative path so duplicate basenames remain distinguishable."""
+    try:
+        return photo_path.resolve().relative_to(PHOTO_DIR.resolve()).as_posix()
+    except ValueError:
+        return photo_path.name
 
 
 def _build_unbound_pool(
@@ -1198,8 +1216,8 @@ def _render_app() -> None:
                     st.image(_load_thumbnail(str(photo_path)), width=150)
                 except Exception:
                     st.markdown("⚠️ unreadable")
-                st.caption(photo_path.name)
-                if st.button("Bind ✓", key=f"bind_{photo_path.name}",
+                st.caption(_photo_display_label(photo_path))
+                if st.button("Bind ✓", key=_photo_widget_key(photo_path),
                              disabled=row_is_approved,
                              use_container_width=True):
                     _bind_photo(row_id, photo_path, state)

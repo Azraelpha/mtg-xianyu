@@ -285,7 +285,9 @@ read-only until the state and existing artifacts are reset together:
 
 If photos are added, moved, or deleted between UI sessions, click
 **↻ Refresh** in the sidebar photo pool section to rescan. The pool is
-built once per session on startup; it does not auto-refresh.
+built once per session on startup; it does not auto-refresh. Nested photo
+folders are supported; the UI shows relative paths and keys thumbnails by their
+complete normalized paths so duplicate filenames do not collide.
 
 ### Xianyu listing workflow (per card)
 

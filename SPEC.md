@@ -458,6 +458,9 @@ bindings.
 - **Left column**: bound photo at ~400 px height with ✕ Unbind button; OR, when
   no photo is bound, a paginated thumbnail grid (4 columns × 3 rows = 12 per
   page, << First / < Prev / Next > / Last >> buttons) for clicking to bind.
+  Thumbnail widget identity uses the complete normalized path, and captions use
+  the path relative to `data/mtg_photos`, so equal filenames in different
+  subdirectories remain distinct.
 - **Right column**:
   - Card name as `h3`, editable Chinese name field (persisted to
     `state.json`, overrides sbwsz `name_zh`).
