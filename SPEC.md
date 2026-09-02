@@ -170,7 +170,10 @@ and a SHA-256 digest of the full URL, including its query string. Card cache
 entries use the envelope
 `{"_cache_kind": "card_response_v1", "fetched_at": ..., "data": ...}` and
 expire after 24 hours because the response contains mutable Jihuanshe prices.
-Legacy untimestamped entries are refreshed once rather than trusted.
+Readable cache path components are sanitized into bounded single filenames;
+input separators, absolute paths, and `..` can never escape
+`data/cache/sbwsz/`. Legacy untimestamped entries are refreshed once rather
+than trusted.
 
 Relevant fields per card entry and how they map to our canonical shape:
 

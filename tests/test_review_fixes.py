@@ -86,6 +86,37 @@ def test_card_cache_identity_includes_query_string(tmp_path, monkeypatch):
     assert bare != viewed
 
 
+@pytest.mark.parametrize(
+    "component",
+    ["../outside", "/tmp/outside", "nested/path", r"nested\path", ".", ".."],
+)
+def test_card_cache_display_parts_cannot_escape_cache_root(component):
+    path = enrich._url_cache_path(
+        component,
+        f"https://example.test/card?q={component}",
+        component,
+        component,
+    )
+    root = Path("data/cache/sbwsz").resolve()
+
+    assert path.resolve().is_relative_to(root)
+    assert path.name.endswith(".json")
+    assert component not in path.parts
+
+
+def test_card_cache_display_parts_are_bounded_without_losing_url_identity():
+    long_component = "x" * 500
+    first = enrich._url_cache_path(
+        "cards", "https://example.test/card?view=1", long_component
+    )
+    second = enrich._url_cache_path(
+        "cards", "https://example.test/card?view=2", long_component
+    )
+
+    assert len(first.name.encode("utf-8")) <= 100
+    assert first != second
+
+
 def test_missing_face_identity_fails_closed_and_borrows_only_name(tmp_path, monkeypatch):
     monkeypatch.setattr(
         enrich,

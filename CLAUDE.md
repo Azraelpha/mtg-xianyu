@@ -144,7 +144,8 @@ from existing `.json` listings (e.g., after updating the treatment mappings).
   through with a log line.
 - Cache keys are derived from the full request URL including query string. Two
   URLs with the same path but different query parameters are different cache
-  entries.
+  entries. Human-readable cache path components are bounded and sanitized;
+  never allow API or export values to introduce path separators or `..`.
 - Stages must remain re-runnable from disk state. Each stage reads its input
   and writes its output; no in-memory state passes between stages.
 - After Claude Code completes a multi-part task, verify each item against the

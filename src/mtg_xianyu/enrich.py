@@ -26,17 +26,30 @@ SETS_TTL = 7 * 24 * 3600   # seconds before the set list is re-fetched
 CARD_CACHE_TTL = 24 * 3600  # card prices and negative lookups expire daily
 FUZZY_SET_SCORE_CUTOFF = 88
 RATE_DELAY = 0.5            # minimum seconds between live requests
+_CACHE_COMPONENT_MAX = 96
+_URL_CACHE_READABLE_MAX = 64
+_UNSAFE_CACHE_CHARS_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 _last_request_at: float = 0.0
 
 
 # ── cache helpers ─────────────────────────────────────────────────────────────
 
+def _safe_cache_component(
+    value: str, *, max_length: int = _CACHE_COMPONENT_MAX
+) -> str:
+    """Return one bounded, relative filename component for cache readability."""
+    component = _UNSAFE_CACHE_CHARS_RE.sub("_", str(value)).strip("._")
+    return (component or "item")[:max_length]
+
+
 def _cache_path(kind: str, *parts: str) -> Path:
     base = Path("data/cache/sbwsz")
+    safe_kind = _safe_cache_component(kind)
     if parts:
-        return base / kind / Path(*parts).with_suffix(".json")
-    return base / f"{kind}.json"
+        safe_parts = [_safe_cache_component(part) for part in parts]
+        return base / safe_kind / Path(*safe_parts[:-1]) / f"{safe_parts[-1]}.json"
+    return base / f"{safe_kind}.json"
 
 
 def _read_cache(path: Path) -> dict | list | None:
@@ -76,7 +89,12 @@ def _write_card_cache(path: Path, data: dict | list) -> None:
 def _url_cache_path(kind: str, url: str, *display_parts: str) -> Path:
     """Build a readable cache path whose identity includes the complete URL."""
     digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
-    leaf = f"{display_parts[-1]}__{digest}" if display_parts else digest
+    if not display_parts:
+        return _cache_path(kind, digest)
+    readable = _safe_cache_component(
+        display_parts[-1], max_length=_URL_CACHE_READABLE_MAX
+    )
+    leaf = f"{readable}__{digest}"
     return _cache_path(kind, *display_parts[:-1], leaf)
 
 
