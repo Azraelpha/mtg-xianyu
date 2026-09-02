@@ -143,6 +143,17 @@ pass through with a log line.
 
 ### 4.2 Enrich — `enrich.py`
 
+Before making any network request, validate that `rows.json` is a JSON array
+of canonical row objects. Required identifiers and strings must be present,
+`product_id` must be a positive integer, `printing` must be `Normal` or `Foil`,
+and `usd_market` must be null or a finite non-negative number. Errors name the
+input row index and card so the source record is immediately identifiable.
+
+Malformed or structurally stale cache envelopes are treated as cache misses
+and refetched. Live sets, card, and search responses are validated before use;
+an invalid live response raises an endpoint-specific `ValueError` rather than
+being cached or surfacing later as an unrelated `KeyError`/`AttributeError`.
+
 **API base URL.** `https://mtgch.com/api/v1/` is the canonical base.
 `new.sbwsz.com` is an alias that 301-redirects to `mtgch.com`; all runtime
 code uses `mtgch.com` directly to avoid the redirect hop.

@@ -61,7 +61,10 @@ def test_legacy_card_cache_is_refreshed_once(tmp_path, monkeypatch):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text('{"prices": {"cny": "1.00"}}', encoding="utf-8")
 
-    transport = _Transport({"prices": {"cny": "2.00"}})
+    transport = _Transport({
+        "prices": {"cny": "2.00"},
+        "faces": [{"name": "Test Card"}],
+    })
     client = httpx.Client(transport=transport)
 
     first = enrich._get_card(client, "MH3", "1")

@@ -143,6 +143,9 @@ from existing `.json` listings (e.g., after updating the treatment mappings).
   finish must be present; finish must be Normal or Foil. Failures raise
   ValueError with a row reference. Fields downstream can handle as null pass
   through with a log line.
+- Enrich-stage disk input is revalidated before network access. Malformed cache
+  entries degrade to cache misses; malformed live sbwsz response shapes fail
+  with the endpoint in the error and are never cached.
 - Cache keys are derived from the full request URL including query string. Two
   URLs with the same path but different query parameters are different cache
   entries. Human-readable cache path components are bounded and sanitized;

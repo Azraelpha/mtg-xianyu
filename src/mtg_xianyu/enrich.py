@@ -11,6 +11,7 @@ Missing Chinese names are left null — never invented. Writes enriched.json.
 import argparse
 import hashlib
 import json
+import math
 import re
 import sys
 import time
@@ -34,6 +35,14 @@ _UNSAFE_CACHE_CHARS_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 _last_request_at: float = 0.0
 
+_REQUIRED_ROW_STRING_FIELDS = (
+    "name_en",
+    "set_name_en",
+    "collector_number",
+    "condition",
+    "printing",
+)
+
 
 # ── cache helpers ─────────────────────────────────────────────────────────────
 
@@ -54,7 +63,7 @@ def _cache_path(kind: str, *parts: str) -> Path:
     return base / f"{safe_kind}.json"
 
 
-def _read_cache(path: Path) -> dict | list | None:
+def _read_cache(path: Path) -> object | None:
     if not path.exists():
         return None
     try:
@@ -67,19 +76,29 @@ def _write_cache(path: Path, data: dict | list) -> None:
     atomic_write_json(path, data)
 
 
-def _read_fresh_card_cache(path: Path) -> dict | list | None:
+def _is_fresh_timestamp(value: object, ttl: float) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    if not math.isfinite(value):
+        return False
+    age = time.time() - value
+    return 0 <= age < ttl
+
+
+def _read_fresh_card_cache(path: Path) -> dict | None:
     """Return an unexpired card-cache payload, ignoring legacy raw entries."""
     cached = _read_cache(path)
     if not isinstance(cached, dict):
         return None
     if cached.get("_cache_kind") != "card_response_v1":
         return None
-    if time.time() - cached.get("fetched_at", 0) >= CARD_CACHE_TTL:
+    if not _is_fresh_timestamp(cached.get("fetched_at"), CARD_CACHE_TTL):
         return None
-    return cached.get("data")
+    data = cached.get("data")
+    return data if isinstance(data, dict) else None
 
 
-def _write_card_cache(path: Path, data: dict | list) -> None:
+def _write_card_cache(path: Path, data: dict) -> None:
     _write_cache(path, {
         "_cache_kind": "card_response_v1",
         "fetched_at": time.time(),
@@ -99,9 +118,218 @@ def _url_cache_path(kind: str, url: str, *display_parts: str) -> Path:
     return _cache_path(kind, *display_parts[:-1], leaf)
 
 
+# ── input and response validation ─────────────────────────────────────────────
+
+def _type_name(value: object) -> str:
+    return type(value).__name__
+
+
+def _load_rows(path: Path) -> list[dict]:
+    """Load and validate the canonical parse-stage output."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"cannot load enrichment input {path}: {exc}") from exc
+    if not isinstance(data, list):
+        raise ValueError(
+            f"invalid enrichment input {path}: expected a JSON array, "
+            f"got {_type_name(data)}"
+        )
+
+    for idx, row in enumerate(data):
+        if not isinstance(row, dict):
+            raise ValueError(
+                f"invalid enrichment input row {idx}: expected an object, "
+                f"got {_type_name(row)}"
+            )
+        ref = f"input row {idx} ({row.get('name_en', '?')!r})"
+        product_id = row.get("product_id")
+        if (
+            isinstance(product_id, bool)
+            or not isinstance(product_id, int)
+            or product_id < 1
+        ):
+            raise ValueError(
+                f"'product_id' must be a positive integer in {ref}: "
+                f"{product_id!r}"
+            )
+        for field in _REQUIRED_ROW_STRING_FIELDS:
+            value = row.get(field)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(
+                    f"{field!r} must be a non-empty string in {ref}: {value!r}"
+                )
+        if row["printing"] not in {"Normal", "Foil"}:
+            raise ValueError(
+                f"'printing' must be 'Normal' or 'Foil' in {ref}: "
+                f"{row['printing']!r}"
+            )
+        usd_market = row.get("usd_market")
+        if usd_market is not None and (
+            isinstance(usd_market, bool)
+            or not isinstance(usd_market, (int, float))
+            or not math.isfinite(usd_market)
+            or usd_market < 0
+        ):
+            raise ValueError(
+                f"'usd_market' must be null or a finite non-negative number "
+                f"in {ref}: {usd_market!r}"
+            )
+    return data
+
+
+def _validate_sets_response(data: object, source: str) -> list[dict]:
+    if not isinstance(data, list):
+        raise ValueError(
+            f"invalid sbwsz sets response from {source}: expected a JSON array, "
+            f"got {_type_name(data)}"
+        )
+    for idx, entry in enumerate(data):
+        if not isinstance(entry, dict):
+            raise ValueError(
+                f"invalid sbwsz sets response from {source}: entry {idx} "
+                f"must be an object, got {_type_name(entry)}"
+            )
+        for field in ("code", "name"):
+            value = entry.get(field)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(
+                    f"invalid sbwsz sets response from {source}: entry {idx} "
+                    f"has invalid {field!r}: {value!r}"
+                )
+        translated_name = entry.get("translated_name")
+        if translated_name is not None and not isinstance(translated_name, str):
+            raise ValueError(
+                f"invalid sbwsz sets response from {source}: entry {idx} has "
+                f"invalid 'translated_name': {translated_name!r}"
+            )
+    return data
+
+
+def _validate_card_response(data: object, source: str) -> dict:
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"invalid sbwsz card response from {source}: expected a JSON object, "
+            f"got {_type_name(data)}"
+        )
+    faces = data.get("faces")
+    if not isinstance(faces, list) or not faces or not all(
+        isinstance(face, dict) for face in faces
+    ):
+        raise ValueError(
+            f"invalid sbwsz card response from {source}: 'faces' must be a "
+            "non-empty array of objects"
+        )
+    primary_name = data.get("primary_name")
+    if primary_name is not None and not isinstance(primary_name, str):
+        raise ValueError(
+            f"invalid sbwsz card response from {source}: 'primary_name' must "
+            f"be a string or null, got {_type_name(primary_name)}"
+        )
+    for field in ("prices", "translation_info"):
+        value = data.get(field)
+        if value is not None and not isinstance(value, dict):
+            raise ValueError(
+                f"invalid sbwsz card response from {source}: {field!r} must "
+                f"be an object or null, got {_type_name(value)}"
+            )
+    prices = data.get("prices") or {}
+    raw_cny = prices.get("cny")
+    if raw_cny not in (None, ""):
+        if isinstance(raw_cny, bool):
+            raise ValueError(
+                f"invalid sbwsz card response from {source}: 'prices.cny' "
+                f"must be numeric or null, got {raw_cny!r}"
+            )
+        try:
+            cny = float(raw_cny)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"invalid sbwsz card response from {source}: 'prices.cny' "
+                f"must be numeric or null, got {raw_cny!r}"
+            ) from exc
+        if not math.isfinite(cny) or cny < 0:
+            raise ValueError(
+                f"invalid sbwsz card response from {source}: 'prices.cny' "
+                f"must be finite and non-negative, got {raw_cny!r}"
+            )
+    translation_info = data.get("translation_info") or {}
+    name_source = translation_info.get("name_source")
+    if name_source is not None and not isinstance(name_source, str):
+        raise ValueError(
+            f"invalid sbwsz card response from {source}: "
+            f"'translation_info.name_source' must be a string or null"
+        )
+    for idx, face in enumerate(faces):
+        name = face.get("name")
+        if name is not None and not isinstance(name, str):
+            raise ValueError(
+                f"invalid sbwsz card response from {source}: face {idx} has "
+                f"invalid 'name': {name!r}"
+            )
+        for field in ("image_uris", "zhs_image_uris"):
+            value = face.get(field)
+            if value is not None and not isinstance(value, dict):
+                raise ValueError(
+                    f"invalid sbwsz card response from {source}: face {idx} "
+                    f"field {field!r} must be an object or null"
+                )
+            normal = (value or {}).get("normal")
+            if normal is not None and not isinstance(normal, str):
+                raise ValueError(
+                    f"invalid sbwsz card response from {source}: face {idx} "
+                    f"field {field!r}.normal must be a string or null"
+                )
+    return data
+
+
+def _validate_search_response(data: object, source: str) -> list[dict]:
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"invalid sbwsz search response from {source}: expected a JSON "
+            f"object, got {_type_name(data)}"
+        )
+    items = data.get("items")
+    if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):
+        raise ValueError(
+            f"invalid sbwsz search response from {source}: 'items' must be an "
+            "array of objects"
+        )
+    for idx, item in enumerate(items):
+        name = item.get("name")
+        if not isinstance(name, str) or not name:
+            raise ValueError(
+                f"invalid sbwsz search response from {source}: item {idx} has "
+                f"invalid 'name': {name!r}"
+            )
+        for field in (
+            "atomic_official_name",
+            "atomic_translated_name",
+            "set",
+            "collector_number",
+        ):
+            value = item.get(field)
+            if value is not None and not isinstance(value, str):
+                raise ValueError(
+                    f"invalid sbwsz search response from {source}: item {idx} "
+                    f"has invalid {field!r}: {value!r}"
+                )
+    return items
+
+
+def _is_borrowed_name_result(data: dict) -> bool:
+    return (
+        isinstance(data.get("name_zh"), str)
+        and bool(data["name_zh"])
+        and isinstance(data.get("is_official"), bool)
+        and isinstance(data.get("set"), str)
+        and isinstance(data.get("collector_number"), str)
+    )
+
+
 # ── HTTP ──────────────────────────────────────────────────────────────────────
 
-def _fetch(client: httpx.Client, url: str, *, _retries: int = 3) -> dict | list:
+def _fetch(client: httpx.Client, url: str, *, _retries: int = 3) -> object:
     global _last_request_at
     elapsed = time.monotonic() - _last_request_at
     if _last_request_at > 0 and elapsed < RATE_DELAY:
@@ -114,16 +342,25 @@ def _fetch(client: httpx.Client, url: str, *, _retries: int = 3) -> dict | list:
         time.sleep(wait)
         return _fetch(client, url, _retries=_retries - 1)
     r.raise_for_status()
-    return r.json()
+    try:
+        return r.json()
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid JSON from sbwsz endpoint {url}: {exc}") from exc
 
 
 def _get_sets(client: httpx.Client) -> list[dict]:
     path = _cache_path("sets")
     cached = _read_cache(path)
-    if cached is not None:
-        if time.time() - cached.get("fetched_at", 0) < SETS_TTL:
-            return cached["data"]
-    data = _fetch(client, f"{BASE_URL}/sets/")
+    if isinstance(cached, dict) and _is_fresh_timestamp(
+        cached.get("fetched_at"), SETS_TTL
+    ):
+        try:
+            return _validate_sets_response(cached.get("data"), f"cache {path}")
+        except ValueError:
+            pass
+
+    url = f"{BASE_URL}/sets/"
+    data = _validate_sets_response(_fetch(client, url), url)
     _write_cache(path, {"fetched_at": time.time(), "data": data})
     return data
 
@@ -135,9 +372,12 @@ def _get_card(client: httpx.Client, set_code: str, number: str) -> dict:
     path = _url_cache_path("cards", url, set_code, number)
     cached = _read_fresh_card_cache(path)
     if cached is not None:
-        return cached
+        try:
+            return _validate_card_response(cached, f"cache {path}")
+        except ValueError:
+            pass
     try:
-        data = _fetch(client, url)
+        data = _validate_card_response(_fetch(client, url), url)
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == 404:
             print(f"[404] {set_code}/{number} not in sbwsz — enrichment fields will be null", file=sys.stderr)
@@ -192,9 +432,12 @@ def _resolve_plst_slash(
     )
     cached = _read_fresh_card_cache(path)
     if cached is not None:
-        if cached.get("_exhausted"):
+        if cached.get("_exhausted") is True:
             return {}
-        return cached
+        try:
+            return _validate_card_response(cached, f"cache {path}")
+        except ValueError:
+            pass
 
     candidates = count_to_codes.get(total_str, [])
     base_name = _strip_parenthetical(name_en).casefold()
@@ -345,32 +588,34 @@ def _search_card_by_name(
     )
     cached = _read_fresh_card_cache(path)
     if cached is not None:
-        if isinstance(cached, dict) and cached.get("_no_match"):
+        if cached.get("_no_match") is True:
             return None
-        return cached
+        if _is_borrowed_name_result(cached):
+            return cached
 
     try:
         data = _fetch(client, search_url)
     except httpx.HTTPStatusError as exc:
         print(f"[name-search] {name_en!r}: HTTP {exc.response.status_code}", file=sys.stderr)
         return None
-    except Exception as exc:
+    except httpx.RequestError as exc:
         print(f"[name-search] {name_en!r}: {exc}", file=sys.stderr)
         return None
 
-    items = data.get("items") if isinstance(data, dict) else []
+    items = _validate_search_response(data, search_url)
     base_name = bare_name.casefold()
-    for item in (items or []):
-        if item.get("name", "").casefold() != base_name:
+    for item in items:
+        item_name = item.get("name")
+        if not isinstance(item_name, str) or item_name.casefold() != base_name:
             continue
         zh_name = item.get("atomic_official_name") or item.get("atomic_translated_name")
-        if not zh_name:
+        if not isinstance(zh_name, str) or not zh_name:
             continue
         result = {
             "name_zh": zh_name,
             "is_official": bool(item.get("atomic_official_name")),
-            "set": item.get("set", ""),
-            "collector_number": item.get("collector_number", ""),
+            "set": item.get("set") or "",
+            "collector_number": item.get("collector_number") or "",
         }
         _write_card_cache(path, result)
         return result
@@ -522,7 +767,7 @@ def main() -> None:
     parser.add_argument("-o", "--output", default="data/enriched.json")
     args = parser.parse_args()
 
-    rows: list[dict] = json.loads(Path(args.input).read_text(encoding="utf-8"))
+    rows = _load_rows(Path(args.input))
     total = len(rows)
 
     client = httpx.Client(headers={"User-Agent": USER_AGENT})

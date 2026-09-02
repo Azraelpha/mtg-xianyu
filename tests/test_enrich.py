@@ -1,3 +1,5 @@
+import json
+import time
 from pathlib import Path
 
 import httpx
@@ -101,6 +103,117 @@ def _reset_rate_limiter():
     enrich._last_request_at = 0.0
     yield
     enrich._last_request_at = 0.0
+
+
+# ── disk and API boundaries ───────────────────────────────────────────────────
+
+def test_load_rows_accepts_canonical_parse_output(tmp_path):
+    path = tmp_path / "rows.json"
+    expected = [_row()]
+    path.write_text(json.dumps(expected), encoding="utf-8")
+
+    assert enrich._load_rows(path) == expected
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        ({"not": "a list"}, "expected a JSON array"),
+        (["not an object"], "row 0: expected an object"),
+        ([{**_row(), "set_name_en": ""}], "'set_name_en'.*input row 0"),
+        ([{**_row(), "product_id": 0}], "'product_id'.*input row 0"),
+        ([{**_row(), "usd_market": "1.50"}], "'usd_market'.*input row 0"),
+    ],
+)
+def test_load_rows_rejects_malformed_shapes_with_row_context(
+    tmp_path, payload, message
+):
+    path = tmp_path / "rows.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=message):
+        enrich._load_rows(path)
+
+
+def test_load_rows_reports_invalid_json_with_path(tmp_path):
+    path = tmp_path / "rows.json"
+    path.write_text("not json", encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"cannot load enrichment input .*rows\.json"):
+        enrich._load_rows(path)
+
+
+@pytest.mark.parametrize(
+    "cached",
+    [
+        ["legacy wrong shape"],
+        {"fetched_at": "recent", "data": SETS_DATA},
+        {"fetched_at": time.time(), "data": {"not": "a list"}},
+    ],
+)
+def test_malformed_sets_cache_is_refetched(cached):
+    path = enrich._cache_path("sets")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(cached), encoding="utf-8")
+    url = f"{BASE_URL}/sets/"
+    client, transport = _make_client({url: SETS_DATA})
+
+    assert enrich._get_sets(client) == SETS_DATA
+    assert transport.calls == [url]
+
+
+def test_malformed_card_cache_is_refetched():
+    url = f"{BASE_URL}/card/MH3/146/?view=1"
+    path = enrich._url_cache_path("cards", url, "MH3", "146")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "_cache_kind": "card_response_v1",
+        "fetched_at": time.time(),
+        "data": {"faces": "not a list"},
+    }), encoding="utf-8")
+    client, transport = _make_client({url: _card()})
+
+    assert enrich._get_card(client, "MH3", "146")["primary_name"] == "闪电击"
+    assert transport.calls == [url]
+
+
+def test_malformed_live_sets_response_names_endpoint():
+    url = f"{BASE_URL}/sets/"
+    client, _ = _make_client({url: {"not": "a list"}})
+
+    with pytest.raises(ValueError, match=r"sets response.*api/v1/sets/.*JSON array"):
+        enrich._get_sets(client)
+    assert not enrich._cache_path("sets").exists()
+
+
+def test_malformed_live_card_response_names_endpoint():
+    url = f"{BASE_URL}/card/MH3/146/?view=1"
+    client, _ = _make_client({url: {"faces": "not a list"}})
+
+    with pytest.raises(ValueError, match=r"card response.*MH3/146.*'faces'"):
+        enrich._get_card(client, "MH3", "146")
+    assert not enrich._url_cache_path("cards", url, "MH3", "146").exists()
+
+
+def test_malformed_live_search_response_names_endpoint():
+    url = _search_url("Lightning Bolt")
+    client, _ = _make_client({url: {"items": {"not": "a list"}}})
+
+    with pytest.raises(ValueError, match=r"search response.*api/v1/result.*'items'"):
+        _search_card_by_name(client, "Lightning Bolt")
+    assert not enrich._url_cache_path(
+        "cards", url, "_name_search", "Lightning_Bolt"
+    ).exists()
+
+
+def test_non_json_live_response_names_endpoint():
+    class _InvalidJsonTransport(httpx.BaseTransport):
+        def handle_request(self, request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, content=b"not json")
+
+    client = httpx.Client(transport=_InvalidJsonTransport())
+    with pytest.raises(ValueError, match=r"invalid JSON.*MH3/146"):
+        enrich._get_card(client, "MH3", "146")
 
 
 # ── set resolution ─────────────────────────────────────────────────────────────
@@ -346,6 +459,29 @@ def test_name_fallback_exact_match():
     assert result["is_official"] is True
     assert result["set"] == "M10"
     assert result["collector_number"] == "146"
+
+
+def test_malformed_name_search_cache_is_refetched():
+    url = _search_url("Lightning Bolt")
+    path = enrich._url_cache_path(
+        "cards", url, "_name_search", "Lightning_Bolt"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "_cache_kind": "card_response_v1",
+        "fetched_at": time.time(),
+        "data": {"name_zh": "缺少缓存字段"},
+    }), encoding="utf-8")
+    items = [_search_item(
+        "Lightning Bolt", official="闪电击", set_code="M10", collector_number="146"
+    )]
+    client, transport = _make_client({url: _search_response(items)})
+
+    result = _search_card_by_name(client, "Lightning Bolt")
+
+    assert result is not None
+    assert result["name_zh"] == "闪电击"
+    assert transport.calls == [url]
 
 
 def test_name_fallback_no_exact_match():
