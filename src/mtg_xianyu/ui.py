@@ -678,6 +678,13 @@ def _next_unfinished_idx(
 
 
 _TRAILING_PAREN_RE = re.compile(r"\s*\([^)]+\)\s*$")
+_UNSAFE_FILENAME_CHARS_RE = re.compile(r"[/\\:\x00-\x1f\x7f]")
+
+
+def _safe_filename_component(value: object) -> str:
+    """Return one normalized filename component with no path separators."""
+    sanitized = _UNSAFE_FILENAME_CHARS_RE.sub("-", str(value or ""))
+    return " ".join(sanitized.split()).strip(" .")
 
 
 def _safe_name_en(name_en: str) -> str:
@@ -685,30 +692,44 @@ def _safe_name_en(name_en: str) -> str:
     s = name_en or ""
     while _TRAILING_PAREN_RE.search(s):
         s = _TRAILING_PAREN_RE.sub("", s).strip()
-    s = s.replace("/", "-").replace(":", "-")
-    return " ".join(s.split()).strip()
+    return _safe_filename_component(s)
+
+
+def _confined_listing_path(listings_dir: Path, filename: str) -> Path:
+    """Build a direct child path and reject symlink/path traversal escapes."""
+    candidate = listings_dir / filename
+    if candidate.resolve().parent != listings_dir.resolve():
+        raise ValueError(f"listing filename escapes {listings_dir}: {filename!r}")
+    return candidate
 
 
 def _jpg_path_for(listing: dict, listings_dir: Path | None = None) -> Path:
     """Build the human-readable JPEG path for a listing, with collision fallback."""
     listings_dir = LISTINGS_DIR if listings_dir is None else listings_dir
-    row_id = listing.get("row_id", "unknown")
+    row_id = _safe_filename_component(listing.get("row_id")) or "unknown"
     name_safe = _safe_name_en(listing.get("name_en", ""))
 
     if not name_safe:
-        return listings_dir / f"{row_id}.jpg"
+        return _confined_listing_path(listings_dir, f"{row_id}.jpg")
 
-    finish_zh = build_finish_zh(listing["name_en"], listing["printing"])
-    cn_safe = listing.get("collector_number", "").replace("/", "-")
+    finish_zh = _safe_filename_component(
+        build_finish_zh(listing["name_en"], listing["printing"])
+    )
+    set_safe = _safe_filename_component(listing.get("set_code")) or "UNKNOWN"
+    cn_safe = _safe_filename_component(listing.get("collector_number")) or "unknown"
     stem = (
-        f"{listing['set_code']}-{cn_safe}"
+        f"{set_safe}-{cn_safe}"
         f" - {name_safe}"
         f" - {finish_zh}"
     )
-    candidate = listings_dir / f"{stem}.jpg"
-    if candidate.exists():
-        copy_num = str(row_id).rsplit("_", 1)[-1]
-        return listings_dir / f"{stem} (copy {copy_num}).jpg"
+    candidate = _confined_listing_path(listings_dir, f"{stem}.jpg")
+    copy_number = 1
+    while candidate.exists():
+        candidate = _confined_listing_path(
+            listings_dir,
+            f"{stem} (copy {copy_number}).jpg",
+        )
+        copy_number += 1
     return candidate
 
 

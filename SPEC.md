@@ -485,9 +485,10 @@ bindings.
 1. `_build_listing(row, row_entry, FX_RATE, ts)` → listing dict.
 2. `_jpg_path_for(listing)` → human-readable JPEG path:
    `{set_code}-{collector_number} - {name_en_safe} - {finish_zh}.jpg`
-   where `name_en_safe` strips parentheticals and replaces `/` and `:` with
-   `-`. If the path already exists (two copies of the same card), appends
-   `(copy {N})`.
+   where `name_en_safe` strips parentheticals. Every filename component strips
+   path separators and control characters, and the completed path must resolve
+   directly inside `data/listings/`. Collisions use the first available
+   `(copy {N})` suffix.
 3. Update `listing["photo_jpg"]` to the resolved path.
 4. `LISTINGS_DIR.mkdir(...)` — ensure directory exists.
 5. Prepare the JPEG, `{row_id}.json`, and `{row_id}.txt` as flushed temporary

@@ -579,6 +579,56 @@ def test_filename_collision_handling(tmp_path):
     assert path.name == "2X2-354 - Imperial Seal - 异画英文平 (copy 1).jpg"
 
 
+def test_filename_collision_handling_finds_next_available_copy(tmp_path):
+    listing = {
+        "row_id": "276329_0",
+        "name_en": "Imperial Seal (Borderless)",
+        "printing": "Normal",
+        "set_code": "2X2",
+        "collector_number": "354",
+    }
+    stem = "2X2-354 - Imperial Seal - 异画英文平"
+    (tmp_path / f"{stem}.jpg").touch()
+    (tmp_path / f"{stem} (copy 1).jpg").touch()
+
+    path = _jpg_path_for(listing, listings_dir=tmp_path)
+
+    assert path.name == f"{stem} (copy 2).jpg"
+
+
+@pytest.mark.parametrize(
+    ("field", "unsafe_value"),
+    [
+        ("set_code", "../outside"),
+        ("collector_number", "../../outside"),
+        ("name_en", "..\\outside\ncard"),
+    ],
+)
+def test_filename_components_cannot_escape_listings_dir(
+    tmp_path, field, unsafe_value
+):
+    listing = {
+        "row_id": "123_0",
+        "name_en": "Test Card",
+        "printing": "Normal",
+        "set_code": "TST",
+        "collector_number": "1",
+    }
+    listing[field] = unsafe_value
+
+    path = _jpg_path_for(listing, listings_dir=tmp_path)
+
+    assert path.resolve().parent == tmp_path.resolve()
+    assert "/" not in path.name
+    assert "\\" not in path.name
+    assert "\n" not in path.name
+
+
+def test_listing_path_guard_rejects_parent_traversal(tmp_path):
+    with pytest.raises(ValueError, match="listing filename escapes"):
+        ui._confined_listing_path(tmp_path, "../outside.jpg")
+
+
 def test_filename_fallback_for_degenerate_data(tmp_path):
     listing = {
         "row_id": "bad_0",
