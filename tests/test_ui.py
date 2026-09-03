@@ -16,6 +16,7 @@ from mtg_xianyu.ui import (
     _next_unfinished_idx,
     _progress_counts,
     _resolve_final_price_and_source,
+    _row_artifact_path,
     _safe_name_en,
     _validate_enriched_rows,
     effective_cny,
@@ -57,6 +58,9 @@ def test_validate_enriched_rows_accepts_canonical_data(tmp_path):
         ({"not": "a list"}, "expected a JSON array"),
         (["not an object"], "row 0 must be an object"),
         ([_enriched_row(row_id="")], "'row_id' must be a non-empty string"),
+        ([_enriched_row(row_id="../outside")], "row_id.*generated"),
+        ([_enriched_row(row_id="12345_00")], "row_id.*generated"),
+        ([_enriched_row(row_id="999_0")], "row_id.*does not match product_id"),
         ([_enriched_row(usd_market="2.00")], "'usd_market'.*finite"),
     ],
 )
@@ -624,9 +628,24 @@ def test_filename_components_cannot_escape_listings_dir(
     assert "\n" not in path.name
 
 
-def test_listing_path_guard_rejects_parent_traversal(tmp_path):
+@pytest.mark.parametrize(
+    "filename",
+    ["../outside.jpg", "nested/../inside.jpg", "/tmp/outside.jpg"],
+)
+def test_listing_path_guard_rejects_non_child_paths(tmp_path, filename):
     with pytest.raises(ValueError, match="listing filename escapes"):
-        ui._confined_listing_path(tmp_path, "../outside.jpg")
+        ui._confined_listing_path(tmp_path, filename)
+
+
+@pytest.mark.parametrize("suffix", [".json", ".txt"])
+def test_row_artifact_paths_cannot_escape_listings_dir(tmp_path, suffix):
+    with pytest.raises(ValueError, match="listing filename escapes"):
+        _row_artifact_path("../outside", suffix, listings_dir=tmp_path)
+
+
+def test_row_artifact_path_accepts_canonical_id(tmp_path):
+    path = _row_artifact_path("12345_0", ".json", listings_dir=tmp_path)
+    assert path == tmp_path / "12345_0.json"
 
 
 def test_filename_fallback_for_degenerate_data(tmp_path):

@@ -495,8 +495,10 @@ bindings.
    `(copy {N})` suffix.
 3. Update `listing["photo_jpg"]` to the resolved path.
 4. `LISTINGS_DIR.mkdir(...)` — ensure directory exists.
-5. Prepare the JPEG, `{row_id}.json`, and `{row_id}.txt` as flushed temporary
-   sibling files without changing the visible listing set.
+5. Using the load-time-validated `{product_id}_{copy_number}` row ID, confine
+   the JPEG, `{row_id}.json`, and `{row_id}.txt` paths directly inside
+   `data/listings/`, then prepare them as flushed temporary sibling files
+   without changing the visible listing set.
 6. Atomically install all three prepared artifacts with `os.replace`. If any
    install fails, remove every artifact installed by this attempt and leave the
    row ready for review.

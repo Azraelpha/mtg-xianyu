@@ -43,6 +43,7 @@ _PHOTO_EXTS = (
 )
 _ROW_STATES = {"waiting_photo", "ready_to_review", "approved", "skipped"}
 _PRICE_SOURCES = {"jhs", "usd_converted", "manual"}
+_ROW_ID_RE = re.compile(r"(?P<product_id>[1-9]\d*)_(?P<copy_number>0|[1-9]\d*)")
 _REQUIRED_ENRICHED_STRINGS = (
     "row_id",
     "name_en",
@@ -503,6 +504,17 @@ def _validate_enriched_rows(data: object, path: Path) -> list[dict]:
                 f"invalid {ref}: 'product_id' must be a positive integer, "
                 f"got {product_id!r}"
             )
+        row_id_match = _ROW_ID_RE.fullmatch(row_id)
+        if row_id_match is None:
+            raise ValueError(
+                f"invalid {ref}: 'row_id' must use the generated "
+                f"'<product_id>_<copy_number>' format, got {row_id!r}"
+            )
+        if int(row_id_match.group("product_id")) != product_id:
+            raise ValueError(
+                f"invalid {ref}: row_id {row_id!r} does not match "
+                f"product_id {product_id!r}"
+            )
         if row["printing"] not in {"Normal", "Foil"}:
             raise ValueError(
                 f"invalid {ref}: 'printing' must be 'Normal' or 'Foil', "
@@ -697,10 +709,24 @@ def _safe_name_en(name_en: str) -> str:
 
 def _confined_listing_path(listings_dir: Path, filename: str) -> Path:
     """Build a direct child path and reject symlink/path traversal escapes."""
+    if Path(filename).parent != Path("."):
+        raise ValueError(f"listing filename escapes {listings_dir}: {filename!r}")
     candidate = listings_dir / filename
     if candidate.resolve().parent != listings_dir.resolve():
         raise ValueError(f"listing filename escapes {listings_dir}: {filename!r}")
     return candidate
+
+
+def _row_artifact_path(
+    row_id: str,
+    suffix: str,
+    listings_dir: Path | None = None,
+) -> Path:
+    """Return a confined JSON or text artifact path for one row."""
+    if suffix not in {".json", ".txt"}:
+        raise ValueError(f"unsupported row artifact suffix: {suffix!r}")
+    listings_dir = LISTINGS_DIR if listings_dir is None else listings_dir
+    return _confined_listing_path(listings_dir, f"{row_id}{suffix}")
 
 
 def _jpg_path_for(listing: dict, listings_dir: Path | None = None) -> Path:
@@ -800,8 +826,8 @@ def _do_approve(row: dict, row_id: str, state: dict) -> None:
 
     jpg_path = _jpg_path_for(listing)
     listing["photo_jpg"] = str(jpg_path)   # overwrite default set by _build_listing
-    json_path = LISTINGS_DIR / f"{row_id}.json"
-    txt_path = LISTINGS_DIR / f"{row_id}.txt"
+    json_path = _row_artifact_path(row_id, ".json")
+    txt_path = _row_artifact_path(row_id, ".txt")
     installed = _write_listing_artifacts(
         listing,
         row_entry["photo_path"],
@@ -1141,7 +1167,7 @@ def _render_app() -> None:
                 unsafe_allow_html=True,
             )
             st.caption("To re-approve, see CLAUDE.md Operations section.")
-            txt_path = LISTINGS_DIR / f"{row_id}.txt"
+            txt_path = _row_artifact_path(row_id, ".txt")
             if txt_path.exists():
                 st.code(txt_path.read_text(encoding="utf-8"), language=None)
         else:

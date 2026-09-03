@@ -246,9 +246,11 @@ from existing `.json` listings (e.g., after updating the treatment mappings).
   so the macOS file picker can identify cards by name when uploading to Xianyu.
   `name_en_safe` strips parentheticals (treatment is already in `finish_zh`),
   and all filename components strip path separators and control characters.
-  The final path is confined to `data/listings/`; collisions use the first
-  available `(copy {N})` suffix. Listings approved before this naming change
-  keep their old `{row_id}.jpg` names on disk.
+  Every JPEG, JSON, and text artifact path is confined to `data/listings/`, and
+  enriched `row_id` values must match their generated
+  `{product_id}_{copy_number}` identity. JPEG collisions use the first available
+  `(copy {N})` suffix. Listings approved before this naming change keep their
+  old `{row_id}.jpg` names on disk.
 
 ## Commands
 
