@@ -16,6 +16,8 @@ import re
 import sys
 import time
 import unicodedata
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 
 import httpx
@@ -29,6 +31,8 @@ SETS_TTL = 7 * 24 * 3600   # seconds before the set list is re-fetched
 CARD_CACHE_TTL = 24 * 3600  # card prices and negative lookups expire daily
 FUZZY_SET_SCORE_CUTOFF = 88
 RATE_DELAY = 0.5            # minimum seconds between live requests
+DEFAULT_RETRY_DELAY = 10.0  # fallback for unusable Retry-After values
+MAX_RETRY_DELAY = 60.0      # avoid hanging an interactive run
 _CACHE_COMPONENT_MAX = 96
 _URL_CACHE_READABLE_MAX = 64
 _UNSAFE_CACHE_CHARS_RE = re.compile(r"[^A-Za-z0-9._-]+")
@@ -330,6 +334,34 @@ def _is_borrowed_name_result(data: dict) -> bool:
 
 # ── HTTP ──────────────────────────────────────────────────────────────────────
 
+def _retry_after_seconds(
+    value: str | None,
+    *,
+    now: datetime | None = None,
+) -> float:
+    """Parse Retry-After seconds or an HTTP-date into a bounded delay."""
+    try:
+        delay = float(value) if value is not None else DEFAULT_RETRY_DELAY
+    except (TypeError, ValueError):
+        try:
+            retry_at = parsedate_to_datetime(value or "")
+            if retry_at.tzinfo is None:
+                retry_at = retry_at.replace(tzinfo=timezone.utc)
+            current = now or datetime.now(timezone.utc)
+            delay = (retry_at - current).total_seconds()
+        except (TypeError, ValueError, OverflowError):
+            delay = DEFAULT_RETRY_DELAY
+
+    if not math.isfinite(delay) or delay < 0:
+        delay = DEFAULT_RETRY_DELAY
+    if delay > MAX_RETRY_DELAY:
+        raise ValueError(
+            f"Retry-After delay {delay:.0f}s exceeds the safe "
+            f"maximum of {MAX_RETRY_DELAY:.0f}s"
+        )
+    return delay
+
+
 def _fetch(client: httpx.Client, url: str, *, _retries: int = 3) -> object:
     global _last_request_at
     elapsed = time.monotonic() - _last_request_at
@@ -338,7 +370,10 @@ def _fetch(client: httpx.Client, url: str, *, _retries: int = 3) -> object:
     _last_request_at = time.monotonic()
     r = client.get(url)
     if r.status_code == 429 and _retries > 0:
-        wait = float(r.headers.get("Retry-After", 10))
+        try:
+            wait = _retry_after_seconds(r.headers.get("Retry-After"))
+        except ValueError as exc:
+            raise ValueError(f"cannot safely retry sbwsz endpoint {url}: {exc}") from exc
         print(f"\n[429] rate limited; waiting {wait:.0f}s …", file=sys.stderr)
         time.sleep(wait)
         return _fetch(client, url, _retries=_retries - 1)

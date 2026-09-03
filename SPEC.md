@@ -91,6 +91,10 @@ it will be the norm.
   against cached data.
 - Rate limit ourselves to ≥100 ms between requests. Send a descriptive
   `User-Agent` identifying the tool and contact info.
+- On HTTP 429, accept either seconds or an HTTP-date in `Retry-After`. Missing,
+  malformed, negative, or non-finite values use a 10-second fallback. Delays
+  over 60 seconds fail with the endpoint named rather than hanging an
+  interactive run or retrying before the server requested.
 - **Query parameters materially change the response shape.** The same path
   with different query strings returns structurally different JSON (e.g.
   `prices.cny` and the `versions` array are absent on the bare card endpoint

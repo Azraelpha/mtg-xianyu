@@ -1,5 +1,7 @@
 import json
 import time
+from datetime import datetime, timezone
+from email.utils import format_datetime
 from pathlib import Path
 
 import httpx
@@ -214,6 +216,51 @@ def test_non_json_live_response_names_endpoint():
     client = httpx.Client(transport=_InvalidJsonTransport())
     with pytest.raises(ValueError, match=r"invalid JSON.*MH3/146"):
         enrich._get_card(client, "MH3", "146")
+
+
+# ── rate-limit handling ───────────────────────────────────────────────────────
+
+def test_retry_after_accepts_numeric_seconds():
+    assert enrich._retry_after_seconds("2.5") == 2.5
+
+
+def test_retry_after_accepts_http_date():
+    now = datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc)
+    retry_at = datetime(2026, 9, 3, 12, 0, 30, tzinfo=timezone.utc)
+    assert enrich._retry_after_seconds(format_datetime(retry_at), now=now) == 30.0
+
+
+@pytest.mark.parametrize("value", [None, "invalid", "-1", "nan", "inf"])
+def test_retry_after_invalid_values_use_safe_default(value):
+    assert enrich._retry_after_seconds(value) == enrich.DEFAULT_RETRY_DELAY
+
+
+def test_retry_after_excessive_delay_is_rejected():
+    excessive = str(enrich.MAX_RETRY_DELAY + 1)
+    with pytest.raises(ValueError, match="exceeds the safe maximum"):
+        enrich._retry_after_seconds(excessive)
+
+
+def test_fetch_retries_429_without_real_sleep(monkeypatch):
+    class _RateLimitedOnceTransport(httpx.BaseTransport):
+        def __init__(self):
+            self.calls = 0
+
+        def handle_request(self, request: httpx.Request) -> httpx.Response:
+            self.calls += 1
+            if self.calls == 1:
+                return httpx.Response(429, headers={"Retry-After": "2"})
+            return httpx.Response(200, json={"ok": True})
+
+    transport = _RateLimitedOnceTransport()
+    client = httpx.Client(transport=transport)
+    sleeps = []
+    monkeypatch.setattr(enrich, "RATE_DELAY", 0)
+    monkeypatch.setattr(enrich.time, "sleep", sleeps.append)
+
+    assert enrich._fetch(client, "https://new.sbwsz.com/api/v1/test") == {"ok": True}
+    assert transport.calls == 2
+    assert sleeps == [2.0]
 
 
 # ── set resolution ─────────────────────────────────────────────────────────────

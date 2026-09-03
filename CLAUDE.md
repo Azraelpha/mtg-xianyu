@@ -126,7 +126,9 @@ from existing `.json` listings (e.g., after updating the treatment mappings).
   JPEG filename to avoid duplication.
 - Set a descriptive `User-Agent` on every sbwsz request, identifying the tool
   and a contact. Space requests ≥100 ms apart. sbwsz is community-run; be
-  respectful.
+  respectful. Honor numeric and HTTP-date `Retry-After` values on 429 responses;
+  use a safe fallback for malformed values and fail instead of sleeping longer
+  than 60 seconds.
 - Cache every sbwsz response under `data/cache/sbwsz/`, keyed by the full
   request URL including query parameters. Card responses contain mutable price
   data, carry a timestamp, and expire after 24 hours. Cache card 404s with an
