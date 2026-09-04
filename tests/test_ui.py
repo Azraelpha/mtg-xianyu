@@ -99,8 +99,12 @@ def test_load_state_migrates_missing_legacy_fields_atomically(tmp_path, monkeypa
     assert entry["photo_path"] == "data/mtg_photos/card.heic"
     assert entry["price_error"] is None
     assert entry["price_cny"] is None
+    assert state["revision"] == 1
     assert json.loads(path.read_text(encoding="utf-8")) == state
-    assert list(tmp_path.iterdir()) == [path]
+    assert {item.name for item in tmp_path.iterdir()} == {
+        "state.json",
+        ".state.json.lock",
+    }
 
 
 @pytest.mark.parametrize(
@@ -143,6 +147,115 @@ def test_load_state_reports_invalid_json_without_overwriting(tmp_path, monkeypat
         ui._load_state()
 
     assert path.read_text(encoding="utf-8") == "not json"
+
+
+@pytest.mark.parametrize("revision", [-1, 1.5, True, "1"])
+def test_load_state_rejects_invalid_revision_without_overwriting(
+    tmp_path, monkeypatch, revision
+):
+    path = tmp_path / "state.json"
+    original = json.dumps({
+        "revision": revision,
+        "fx_rate": FX_RATE,
+        "rows": {},
+    })
+    path.write_text(original, encoding="utf-8")
+    monkeypatch.setattr(ui, "STATE_PATH", path)
+
+    with pytest.raises(ValueError, match="revision.*non-negative integer"):
+        ui._load_state()
+
+    assert path.read_text(encoding="utf-8") == original
+
+
+def test_stale_session_cannot_overwrite_newer_row_update(tmp_path, monkeypatch):
+    path = tmp_path / "state.json"
+    path.write_text(json.dumps({
+        "revision": 0,
+        "fx_rate": FX_RATE,
+        "rows": {
+            "first_0": ui._new_row_entry(),
+            "second_0": ui._new_row_entry(),
+        },
+    }), encoding="utf-8")
+    monkeypatch.setattr(ui, "STATE_PATH", path)
+    active_ids = {"first_0", "second_0"}
+    first_session = ui._load_state(active_ids)
+    stale_session = ui._load_state(active_ids)
+
+    ui._set_row_state(first_session, "first_0", name_zh_override="first saved")
+    with pytest.raises(ui.StateConflictError, match="another session"):
+        ui._set_row_state(
+            stale_session, "second_0", name_zh_override="second lost"
+        )
+
+    persisted = json.loads(path.read_text(encoding="utf-8"))
+    assert persisted["revision"] == 1
+    assert persisted["rows"]["first_0"]["name_zh_override"] == "first saved"
+    assert persisted["rows"]["second_0"]["name_zh_override"] is None
+    assert stale_session == persisted
+
+
+def test_stale_session_cannot_duplicate_newer_photo_binding(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "state.json"
+    photo = tmp_path / "card.heic"
+    path.write_text(json.dumps({
+        "revision": 0,
+        "fx_rate": FX_RATE,
+        "rows": {
+            "first_0": ui._new_row_entry(),
+            "second_0": ui._new_row_entry(),
+        },
+    }), encoding="utf-8")
+    monkeypatch.setattr(ui, "STATE_PATH", path)
+    active_ids = {"first_0", "second_0"}
+    first_session = ui._load_state(active_ids)
+    stale_session = ui._load_state(active_ids)
+
+    first_session["rows"]["first_0"].update({
+        "state": "ready_to_review",
+        "photo_path": str(photo),
+    })
+    ui._save_state(first_session)
+    with pytest.raises(ui.StateConflictError, match="another session"):
+        ui._bind_photo("second_0", photo, stale_session, active_ids)
+
+    persisted = json.loads(path.read_text(encoding="utf-8"))
+    assert persisted["rows"]["first_0"]["photo_path"] == str(photo)
+    assert persisted["rows"]["second_0"]["photo_path"] is None
+    assert stale_session == persisted
+
+
+def test_state_conflict_clears_stale_streamlit_session_and_reruns(monkeypatch):
+    class RerunSignal(Exception):
+        pass
+
+    class FakeSessionState(dict):
+        def __setattr__(self, name, value):
+            self[name] = value
+
+    session_state = FakeSessionState(state="stale", widget_value="unsaved")
+
+    def raise_conflict():
+        raise ui.StateConflictError("changed in another session")
+
+    def rerun():
+        raise RerunSignal
+
+    monkeypatch.setattr(
+        ui,
+        "st",
+        SimpleNamespace(session_state=session_state, rerun=rerun),
+    )
+
+    with pytest.raises(RerunSignal):
+        ui._run_state_action(raise_conflict)
+
+    assert session_state == {
+        "_state_conflict": "changed in another session",
+    }
 
 
 def test_load_state_rejects_duplicate_active_photo_aliases_without_overwriting(

@@ -169,6 +169,9 @@ from existing `.json` listings (e.g., after updating the treatment mappings).
 - Persistent JSON and text outputs use the shared atomic writers in
   `storage.py`; never write directly to a final pipeline, cache, description,
   or UI-state path.
+- UI state writes also require the monotonic `revision` compare-and-swap under
+  `.state.json.lock`. A stale Streamlit session must fail and reload current
+  disk state; never let it replace a newer whole-file state snapshot.
 - After Claude Code completes a multi-part task, verify each item against the
   original prompt before approving. Coding agents are lossy on tail items.
 - State mutations in Streamlit (button clicks, `on_change` callbacks that write

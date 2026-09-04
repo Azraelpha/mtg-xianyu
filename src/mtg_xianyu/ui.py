@@ -9,6 +9,7 @@ Run with:
 Must be run from the project root so that relative data/ paths resolve.
 """
 
+import fcntl
 import hashlib
 import io
 import json
@@ -17,8 +18,11 @@ import os
 import re
 import subprocess
 import tempfile
+from contextlib import contextmanager
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
+from typing import Iterator
 
 from PIL import Image
 from pillow_heif import register_heif_opener
@@ -66,6 +70,10 @@ _NULLABLE_ENRICHED_STRINGS = (
     "rarity",
     "tcg_photo_url",
 )
+
+
+class StateConflictError(RuntimeError):
+    """Raised when a stale UI session tries to replace newer disk state."""
 
 
 # ── pure helpers (testable without Streamlit) ─────────────────────────────────
@@ -126,6 +134,35 @@ def _is_finite_nonnegative_number(value: object) -> bool:
     )
 
 
+def _state_revision(state: object, path: Path) -> int:
+    """Return a validated state revision, treating legacy files as revision 0."""
+    if not isinstance(state, dict):
+        raise ValueError(
+            f"invalid UI state {path}: expected a JSON object, "
+            f"got {type(state).__name__}"
+        )
+    revision = state.get("revision", 0)
+    if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
+        raise ValueError(
+            f"invalid UI state {path}: 'revision' must be a non-negative "
+            f"integer, got {revision!r}"
+        )
+    return revision
+
+
+@contextmanager
+def _state_file_lock() -> Iterator[None]:
+    """Serialize state revision checks and atomic replacements across processes."""
+    STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = STATE_PATH.with_name(f".{STATE_PATH.name}.lock")
+    with lock_path.open("a+b") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
 def _photo_identity(photo_path: str | Path) -> Path:
     """Return a canonical identity for one photo path spelling."""
     return Path(photo_path).resolve()
@@ -181,6 +218,11 @@ def _validate_and_migrate_state(state: object, path: Path) -> tuple[dict, bool]:
         )
 
     changed = False
+    if "revision" not in state:
+        state["revision"] = 0
+        changed = True
+    _state_revision(state, path)
+
     if "rows" not in state:
         state["rows"] = {}
         changed = True
@@ -269,7 +311,7 @@ def _validate_and_migrate_state(state: object, path: Path) -> tuple[dict, bool]:
 def _load_state(active_row_ids: set[str] | None = None) -> dict:
     """Read, validate, and safely migrate state.json."""
     if not STATE_PATH.exists():
-        return {"fx_rate": FX_RATE, "rows": {}}
+        return {"revision": 0, "fx_rate": FX_RATE, "rows": {}}
     try:
         raw_state = json.loads(STATE_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -282,7 +324,50 @@ def _load_state(active_row_ids: set[str] | None = None) -> dict:
 
 
 def _save_state(state: dict) -> None:
-    atomic_write_json(STATE_PATH, state)
+    """Atomically save state unless a newer revision already exists on disk."""
+    expected_revision = _state_revision(state, STATE_PATH)
+    candidate = deepcopy(state)
+    candidate["revision"] = expected_revision + 1
+
+    with _state_file_lock():
+        current_state: dict | None = None
+        if STATE_PATH.exists():
+            try:
+                raw_state = json.loads(STATE_PATH.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise ValueError(
+                    f"cannot verify UI state revision at {STATE_PATH}: {exc}"
+                ) from exc
+            current_state, _ = _validate_and_migrate_state(
+                raw_state, STATE_PATH
+            )
+            current_revision = _state_revision(current_state, STATE_PATH)
+        else:
+            current_revision = 0 if expected_revision == 0 else -1
+
+        if current_revision != expected_revision:
+            if current_state is not None:
+                state.clear()
+                state.update(current_state)
+            raise StateConflictError(
+                "Review state changed in another session; your attempted "
+                "change was not saved"
+            )
+
+        atomic_write_json(STATE_PATH, candidate)
+
+    state.clear()
+    state.update(candidate)
+
+
+def _run_state_action(action, *args, **kwargs):
+    """Run one UI mutation and reload the session after a revision conflict."""
+    try:
+        return action(*args, **kwargs)
+    except StateConflictError as exc:
+        st.session_state.clear()
+        st.session_state._state_conflict = str(exc)
+        st.rerun()
 
 
 def _ensure_row(state: dict, row_id: str) -> None:
@@ -328,12 +413,12 @@ def _progress_counts(all_rows: list[dict], state: dict) -> tuple[int, int, int]:
     return approved, skipped, len(all_rows) - approved - skipped
 
 
-def _set_row_state(state: dict, row_id: str, **fields) -> None:
+def _set_row_state(ui_state: dict, row_id: str, **fields) -> None:
     """Partial-update a row's state entry and persist to disk."""
-    _require_row_mutable(state, row_id)
-    _ensure_row(state, row_id)
-    state["rows"][row_id].update(fields)
-    _save_state(state)
+    _require_row_mutable(ui_state, row_id)
+    _ensure_row(ui_state, row_id)
+    ui_state["rows"][row_id].update(fields)
+    _save_state(ui_state)
 
 
 # ── photo pool ────────────────────────────────────────────────────────────────
@@ -498,7 +583,7 @@ def _on_name_change(row_id: str) -> None:
     val = st.session_state.get(f"name_zh_{row_id}", "").strip()
     _ensure_row(state, row_id)
     state["rows"][row_id]["name_zh_override"] = val if val else None
-    _save_state(state)
+    _run_state_action(_save_state, state)
     st.rerun()
 
 
@@ -534,7 +619,7 @@ def _on_price_override_change(row_id: str) -> None:
             state["rows"][row_id]["price_cny"] = None
             state["rows"][row_id]["price_source"] = None
         state["rows"][row_id]["price_error"] = None
-    _save_state(state)
+    _run_state_action(_save_state, state)
     st.rerun()
 
 
@@ -886,6 +971,10 @@ def _do_approve(row: dict, row_id: str, state: dict) -> None:
     })
     try:
         _save_state(state)
+    except StateConflictError:
+        for path in reversed(installed):
+            path.unlink(missing_ok=True)
+        raise
     except Exception:
         state["rows"][row_id] = original_row_entry
         for path in reversed(installed):
@@ -936,6 +1025,12 @@ def _render_app() -> None:
     if "state" not in st.session_state:
         try:
             state = _load_state(active_row_ids)
+            if _init_rows(state, all_rows):
+                _save_state(state)
+        except StateConflictError as exc:
+            st.session_state.clear()
+            st.session_state._state_conflict = str(exc)
+            st.rerun()
         except ValueError as exc:
             st.error(f"Cannot load review state: {exc}")
             st.caption(
@@ -943,11 +1038,15 @@ def _render_app() -> None:
                 "the file was not overwritten."
             )
             return
-        if _init_rows(state, all_rows):
-            _save_state(state)
         st.session_state.state = state
 
     state = st.session_state.state
+    if conflict_message := st.session_state.pop("_state_conflict", None):
+        st.warning(conflict_message)
+        st.caption(
+            "Your attempted change was not saved; the latest disk state "
+            "has been loaded."
+        )
 
     # ── sidebar progress indicator ────────────────────────────────────────────
     with st.sidebar:
@@ -1097,13 +1196,13 @@ def _render_app() -> None:
             if not row_is_approved and st.button(
                 "✕ Unbind", key=f"unbind_{row_id}"
             ):
-                _unbind_photo(row_id, state)
+                _run_state_action(_unbind_photo, row_id, state)
         elif bound_photo:
             st.warning(f"Photo file missing: {Path(bound_photo).name}")
             if not row_is_approved and st.button(
                 "✕ Unbind (file missing)", key=f"unbind_{row_id}"
             ):
-                _unbind_photo(row_id, state)
+                _run_state_action(_unbind_photo, row_id, state)
         else:
             st.markdown(
                 "<div style='height:320px; background:#f5f5f5; border-radius:8px;"
@@ -1144,8 +1243,13 @@ def _render_app() -> None:
             if st.button(jhs_btn, key=f"use_jhs_{row_id}",
                          disabled=(row_is_approved or jhs is None),
                          use_container_width=True):
-                _set_row_state(
-                    state, row_id, price_cny=jhs, price_source="jhs", price_error=None
+                _run_state_action(
+                    _set_row_state,
+                    state,
+                    row_id,
+                    price_cny=jhs,
+                    price_source="jhs",
+                    price_error=None,
                 )
                 st.rerun()
 
@@ -1162,7 +1266,8 @@ def _render_app() -> None:
             if st.button(usd_btn, key=f"use_usd_{row_id}",
                          disabled=(row_is_approved or usd is None),
                          use_container_width=True):
-                _set_row_state(
+                _run_state_action(
+                    _set_row_state,
                     state,
                     row_id,
                     price_cny=round(usd * FX_RATE, 2),
@@ -1222,7 +1327,7 @@ def _render_app() -> None:
                 use_container_width=True,
                 key=f"approve_{row_id}",
             ):
-                _do_approve(row, row_id, state)
+                _run_state_action(_do_approve, row, row_id, state)
                 next_idx = _next_unfinished_idx(display_rows, state, idx, view)
                 if next_idx is not None:
                     st.session_state.current_idx = next_idx
@@ -1247,9 +1352,9 @@ def _render_app() -> None:
                 use_container_width=True,
                 key=f"skip_{row_id}",
             ):
-                _ensure_row(state, row_id)
-                state["rows"][row_id]["state"] = "skipped"
-                _save_state(state)
+                _run_state_action(
+                    _set_row_state, state, row_id, state="skipped"
+                )
                 next_idx = _next_unfinished_idx(display_rows, state, idx, view)
                 if next_idx is not None:
                     st.session_state.current_idx = next_idx
@@ -1308,7 +1413,9 @@ def _render_app() -> None:
                 if st.button("Bind ✓", key=_photo_widget_key(photo_path),
                              disabled=row_is_approved,
                              use_container_width=True):
-                    _bind_photo(row_id, photo_path, state, active_row_ids)
+                    _run_state_action(
+                        _bind_photo, row_id, photo_path, state, active_row_ids
+                    )
 
         # Pagination — four equal-width buttons in one row
         at_first = page == 0

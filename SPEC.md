@@ -107,7 +107,10 @@ it will be the norm.
 All stage outputs, sbwsz cache entries, regenerated descriptions, and UI state
 files are written through the shared atomic storage helpers: prepare a flushed
 temporary sibling, then replace the destination with `os.replace`. A failed
-write preserves the previous complete file and removes its temporary file.
+write preserves the previous complete file and removes its temporary file. UI
+state writes additionally hold an inter-process lock and compare a monotonic
+revision before replacement, preventing stale Streamlit sessions from
+overwriting newer state.
 
 ### 4.1 Parse — `parse.py`
 
@@ -455,7 +458,7 @@ are disabled, and their mutation callbacks reject approved state as a second
 line of defense. Re-approval requires the explicit manual recovery procedure
 in `CLAUDE.md`, including removal of the existing artifacts.
 
-Per-row state persisted in `state.json`:
+Top-level state includes a monotonic `revision`; per-row state includes:
 `{state, photo_path, name_zh_override, price_cny, price_source, price_error,
 approved_at}`
 
@@ -469,6 +472,12 @@ backfilled and saved atomically. Invalid files are left untouched and surfaced
 as actionable errors in the page instead of being silently reset. State rows
 from an older dataset are preserved but excluded from current progress counts,
 photo-uniqueness checks, and photo-pool bindings.
+
+Every successful state write increments `revision` while holding
+`.state.json.lock`. A session whose expected revision no longer matches disk
+state has its write rejected. The Streamlit session then clears its stale
+widget cache, reloads current disk state, and displays a warning. This
+intentionally favors a visible retry over silent lost updates.
 
 **Layout:**
 
@@ -524,8 +533,11 @@ photo-uniqueness checks, and photo-pool bindings.
    row ready for review.
 7. Update `state["rows"][row_id]` in-memory: `state="approved"`, `approved_at=ts`, `price_cny`, `price_source`.
 8. `_save_state(state)` — write a flushed sibling temporary file and atomically
-   replace `state.json`. If it fails, restore the previous in-memory row state
-   and remove the new listing artifacts.
+   replace `state.json` only if its locked revision still matches the session.
+   If persistence fails, restore the previous in-memory row state and remove
+   the new listing artifacts. If another session won the revision race, refresh
+   in-memory state from disk and remove the new artifacts before reporting the
+   conflict.
 9. Auto-advance to the next `ready_to_review` row, wrapping once to the start
    of the active view; set `_all_caught_up` only if none exist anywhere in that
    view.
@@ -563,6 +575,8 @@ saves. `scan.py` pays off on the *next* batch.
 
 ```json
 {
+  "revision": 42,
+  "fx_rate": 7.25,
   "rows": {
     "{row_id}": {
       "state": "waiting_photo | ready_to_review | approved | skipped",

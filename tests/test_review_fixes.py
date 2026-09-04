@@ -302,7 +302,10 @@ def test_state_write_is_atomic_on_replace_failure(tmp_path, monkeypatch):
         ui._save_state({"new": True})
 
     assert json.loads(state_path.read_text(encoding="utf-8")) == {"old": True}
-    assert list(tmp_path.iterdir()) == [state_path]
+    assert {item.name for item in tmp_path.iterdir()} == {
+        "state.json",
+        ".state.json.lock",
+    }
 
 
 def _approval_fixture(tmp_path):
@@ -351,7 +354,9 @@ def test_approval_installs_complete_artifact_set_and_persists_state(
     assert state["rows"]["1_0"]["state"] == "approved"
     persisted = json.loads((listings / "state.json").read_text(encoding="utf-8"))
     assert persisted["rows"]["1_0"]["state"] == "approved"
-    assert not any(path.name.startswith(".") for path in listings.iterdir())
+    assert {
+        path.name for path in listings.iterdir() if path.name.startswith(".")
+    } == {".state.json.lock"}
 
 
 def test_approval_artifact_install_rolls_back_partial_replace(tmp_path, monkeypatch):
@@ -391,3 +396,36 @@ def test_approval_rolls_back_artifacts_when_state_save_fails(tmp_path, monkeypat
 
     assert state["rows"]["1_0"]["state"] == "ready_to_review"
     assert list(listings.iterdir()) == []
+
+
+def test_stale_approval_rolls_back_artifacts_and_refreshes_state(
+    tmp_path, monkeypatch
+):
+    row, initial_state = _approval_fixture(tmp_path)
+    initial_state["revision"] = 0
+    listings = tmp_path / "listings"
+    listings.mkdir()
+    state_path = listings / "state.json"
+    state_path.write_text(json.dumps(initial_state), encoding="utf-8")
+    monkeypatch.setattr(ui, "LISTINGS_DIR", listings)
+    monkeypatch.setattr(ui, "STATE_PATH", state_path)
+    active_ids = {"1_0"}
+    stale_session = ui._load_state(active_ids)
+    newer_session = ui._load_state(active_ids)
+
+    ui._set_row_state(
+        newer_session, "1_0", name_zh_override="newer session edit"
+    )
+    with pytest.raises(ui.StateConflictError, match="another session"):
+        ui._do_approve(row, "1_0", stale_session)
+
+    persisted = json.loads(state_path.read_text(encoding="utf-8"))
+    assert persisted["rows"]["1_0"]["state"] == "ready_to_review"
+    assert (
+        persisted["rows"]["1_0"]["name_zh_override"]
+        == "newer session edit"
+    )
+    assert stale_session == persisted
+    assert not (listings / "1_0.json").exists()
+    assert not (listings / "1_0.txt").exists()
+    assert not any(path.suffix == ".jpg" for path in listings.iterdir())
