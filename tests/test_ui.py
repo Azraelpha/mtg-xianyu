@@ -301,7 +301,11 @@ def test_approval_hint_blocking_no_price_no_default():
 def test_approval_hint_blocking_no_name():
     # name_zh null, no override → name warning only.
     row = {"name_zh": None, "jihuanshe_price_cny": None, "usd_market": None}
-    entry = {"price_cny": 15.0, "name_zh_override": None}
+    entry = {
+        "price_cny": 15.0,
+        "price_source": "manual",
+        "name_zh_override": None,
+    }
     hints = _approval_hints(row, entry)
     assert len(hints) == 1
     msg, level = hints[0]
@@ -338,7 +342,11 @@ def test_approval_hint_default_usd_only():
 def test_approval_hint_explicit_price():
     # User set price_cny, name_zh present → ready to approve.
     row = {"name_zh": "御用密令", "jihuanshe_price_cny": 25.0, "usd_market": 10.0}
-    entry = {"price_cny": 22.0, "name_zh_override": None}
+    entry = {
+        "price_cny": 22.0,
+        "price_source": "manual",
+        "name_zh_override": None,
+    }
     hints = _approval_hints(row, entry)
     assert len(hints) == 1
     _, level = hints[0]
@@ -348,7 +356,11 @@ def test_approval_hint_explicit_price():
 def test_approval_hint_override_name():
     # name_zh null but name_zh_override set → name condition satisfied.
     row = {"name_zh": None, "jihuanshe_price_cny": None, "usd_market": None}
-    entry = {"price_cny": 15.0, "name_zh_override": "御用密令"}
+    entry = {
+        "price_cny": 15.0,
+        "price_source": "manual",
+        "name_zh_override": "御用密令",
+    }
     hints = _approval_hints(row, entry)
     assert len(hints) == 1
     _, level = hints[0]
@@ -358,7 +370,11 @@ def test_approval_hint_override_name():
 def test_approval_hint_explicit_zero_price():
     # price_cny=0.0 is a valid explicit choice (user typed 0), not absent.
     row = {"name_zh": "御用密令", "jihuanshe_price_cny": None, "usd_market": None}
-    entry = {"price_cny": 0.0, "name_zh_override": None}
+    entry = {
+        "price_cny": 0.0,
+        "price_source": "manual",
+        "name_zh_override": None,
+    }
     hints = _approval_hints(row, entry)
     assert len(hints) == 1
     _, level = hints[0]
@@ -377,6 +393,40 @@ def test_approval_hint_all_blocking():
     assert any("chinese name" in m.lower() for m in messages)
 
 
+@pytest.mark.parametrize(
+    ("price_source", "row"),
+    [
+        (
+            "jhs",
+            {
+                "name_zh": "御用密令",
+                "jihuanshe_price_cny": None,
+                "usd_market": 10.0,
+            },
+        ),
+        (
+            "usd_converted",
+            {
+                "name_zh": "御用密令",
+                "jihuanshe_price_cny": 25.0,
+                "usd_market": None,
+            },
+        ),
+    ],
+)
+def test_approval_hint_blocks_when_selected_source_disappears(price_source, row):
+    entry = {
+        "price_cny": 22.0,
+        "price_source": price_source,
+        "name_zh_override": None,
+    }
+    hints = _approval_hints(row, entry)
+    assert any(
+        level == "warning" and "no longer available" in message
+        for message, level in hints
+    )
+
+
 # ── _resolve_final_price_and_source ──────────────────────────────────────────
 
 def test_price_source_inference_explicit_manual():
@@ -385,6 +435,22 @@ def test_price_source_inference_explicit_manual():
     price, source = _resolve_final_price_and_source(row, state_row, FX_RATE)
     assert price == 88.0
     assert source == "manual"
+
+
+def test_selected_jhs_price_refreshes_from_current_row():
+    row = {"jihuanshe_price_cny": 120.0, "usd_market": 20.0}
+    state_row = {"price_cny": 100.0, "price_source": "jhs"}
+    price, source = _resolve_final_price_and_source(row, state_row, FX_RATE)
+    assert price == 120.0
+    assert source == "jhs"
+
+
+def test_selected_usd_price_recomputes_with_current_fx_rate():
+    row = {"jihuanshe_price_cny": 100.0, "usd_market": 10.0}
+    state_row = {"price_cny": 72.5, "price_source": "usd_converted"}
+    price, source = _resolve_final_price_and_source(row, state_row, 7.0)
+    assert price == 70.0
+    assert source == "usd_converted"
 
 
 def test_price_source_inference_default_jhs():
@@ -464,6 +530,25 @@ def test_approve_listing_uses_name_override():
                  "name_zh_override": "覆盖名称"}
     listing = _build_listing(row, state_row, FX_RATE, "2026-01-01T00:00:00")
     assert listing["name_zh"] == "覆盖名称"
+
+
+def test_approve_listing_records_recomputed_usd_price_and_rate():
+    row = {
+        "row_id": "r0",
+        "name_zh": "原始名称",
+        "jihuanshe_price_cny": None,
+        "usd_market": 10.0,
+    }
+    state_row = {
+        "photo_path": "p.heic",
+        "price_cny": 72.5,
+        "price_source": "usd_converted",
+        "name_zh_override": None,
+    }
+    listing = _build_listing(row, state_row, 7.0, "2026-01-01T00:00:00")
+    assert listing["price_cny"] == 70.0
+    assert listing["price_source"] == "usd_converted"
+    assert listing["fx_rate_at_approval"] == 7.0
 
 
 # ── _next_unfinished_idx ──────────────────────────────────────────────────────

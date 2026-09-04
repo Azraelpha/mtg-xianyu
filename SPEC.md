@@ -339,21 +339,27 @@ absorbed into `ui.py` as an inline dual-column layout.
 side by side:
 
 - **JHS column**: `jihuanshe_price_cny` from `enriched.json` (greyed out when
-  null). A "Use this" button sets `price_cny = jihuanshe_price_cny` with
-  `price_source = "jhs"`.
+  null). A "Use this" button selects `price_source = "jhs"` and stores the
+  current value as a UI preview.
 - **USD column**: `usd_market × FX_RATE` (always available). A "Use this"
-  button sets `price_cny = round(usd_market × FX_RATE, 2)` with
-  `price_source = "usd_converted"`.
+  button selects `price_source = "usd_converted"` and stores the current
+  converted value as a UI preview.
 - **Manual override**: free-text number input. Sets `price_source = "manual"`.
 
 `FX_RATE = 7.25` is hardcoded in `ui.py` and displayed in the sidebar. Tune
 empirically after the first batch of sales.
 
+At approval time, source-based selections are resolved again from the current
+row: JHS uses the current enriched price and USD uses the current `FX_RATE`.
+This keeps the approved value consistent with what the UI displays after data
+or configuration changes. Manual prices remain fixed. If a selected source is
+no longer available, approval is blocked until another source is chosen.
+
 Sort order in the UI is by `effective_cny = jihuanshe_price_cny or (usd_market
 × FX_RATE)`, descending. This is review-order only — it does not affect the
 displayed price columns.
 
-The approved listing records `price_cny`, `price_source`, and
+The approved listing records the resolved `price_cny`, `price_source`, and
 `fx_rate_at_approval` (snapshot of the rate used if source is `usd_converted`).
 
 ### 4.5 Describe — `describe.py`

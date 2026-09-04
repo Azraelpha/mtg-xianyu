@@ -568,26 +568,21 @@ def _approval_hints(row: dict, row_entry: dict) -> list[tuple[str, str]]:
     """
     hints: list[tuple[str, str]] = []
 
-    price_cny = row_entry.get("price_cny")
-    jhs = row.get("jihuanshe_price_cny")
-    usd = row.get("usd_market")
-
-    if row_entry.get("price_error"):
-        hints.append((f"⚠ Invalid manual price: {row_entry['price_error']}", "warning"))
-    elif price_cny is None:
-        if jhs is not None:
+    selected_source = row_entry.get("price_source")
+    try:
+        resolved_price, resolved_source = _resolve_final_price_and_source(
+            row, row_entry, FX_RATE
+        )
+    except ValueError as exc:
+        hints.append((f"⚠ {exc}", "warning"))
+    else:
+        if selected_source is None:
+            source_label = "JHS" if resolved_source == "jhs" else "USD × FX"
             hints.append((
-                f"✓ Price will default to JHS ¥{jhs:.2f} (or click Use this to confirm)",
-                "info",
-            ))
-        elif usd is not None:
-            hints.append((
-                f"✓ Price will default to USD × FX ¥{usd * FX_RATE:.2f}"
+                f"✓ Price will default to {source_label} ¥{resolved_price:.2f}"
                 " (or click Use this to confirm)",
                 "info",
             ))
-        else:
-            hints.append(("⚠ Set a price before approving", "warning"))
 
     name_zh_override = row_entry.get("name_zh_override") or ""
     if not name_zh_override and not row.get("name_zh"):
@@ -620,27 +615,44 @@ def _resolve_final_price_and_source(
 ) -> tuple[float, str]:
     """Return (price_cny, price_source) for the approval listing.
 
-    Precedence: explicit state (manual/jhs/usd) → JHS default → USD default.
-    Raises ValueError only if no price is available at all (should be
-    unreachable when Approve is enabled, since the hint blocks it).
+    Manual prices remain fixed. Source-based selections are resolved from the
+    current row so refreshed JHS data or a changed FX rate cannot silently
+    produce a stale approval. Without an explicit selection, JHS then USD are
+    used as defaults.
     """
     if state_row.get("price_error"):
         raise ValueError(
             f"Invalid manual price for row {row.get('row_id')}: "
             f"{state_row['price_error']}"
         )
-    if state_row.get("price_source") is not None:
-        return (
-            _parse_manual_price(str(state_row.get("price_cny"))),
-            state_row["price_source"],
-        )
+    price_source = state_row.get("price_source")
+    if price_source == "manual":
+        return _parse_manual_price(str(state_row.get("price_cny"))), "manual"
+
     jhs = row.get("jihuanshe_price_cny")
+    if price_source == "jhs":
+        if jhs is None:
+            raise ValueError(
+                "Selected JHS price is no longer available; choose another price"
+            )
+        return _parse_manual_price(str(jhs)), "jhs"
+
+    usd = row.get("usd_market")
+    if price_source == "usd_converted":
+        if usd is None:
+            raise ValueError(
+                "Selected USD price is no longer available; choose another price"
+            )
+        return (
+            _parse_manual_price(str(round(usd * fx_rate, 2))),
+            "usd_converted",
+        )
+
     if jhs is not None:
         return _parse_manual_price(str(jhs)), "jhs"
-    usd = row.get("usd_market")
     if usd is not None:
         return _parse_manual_price(str(round(usd * fx_rate, 2))), "usd_converted"
-    raise ValueError(f"No price available for row {row.get('row_id')}")
+    raise ValueError("Set a price before approving")
 
 
 def _build_listing(row: dict, state_row: dict, fx_rate: float, ts: str) -> dict:
