@@ -24,7 +24,13 @@ from PIL import Image
 from pillow_heif import register_heif_opener
 import streamlit as st
 
-from mtg_xianyu.describe import build_description, build_finish_zh
+from mtg_xianyu.artifacts import (
+    confined_listing_path as _confined_listing_path,
+    jpg_path_for as _build_jpg_path,
+    row_artifact_path as _build_row_artifact_path,
+    safe_name_en as _safe_name_en,
+)
+from mtg_xianyu.describe import build_description
 from mtg_xianyu.storage import atomic_write_json, prepare_text_file
 
 register_heif_opener()  # enable HEIC support for PIL.Image.open()
@@ -689,74 +695,24 @@ def _next_unfinished_idx(
     return None
 
 
-_TRAILING_PAREN_RE = re.compile(r"\s*\([^)]+\)\s*$")
-_UNSAFE_FILENAME_CHARS_RE = re.compile(r"[/\\:\x00-\x1f\x7f]")
-
-
-def _safe_filename_component(value: object) -> str:
-    """Return one normalized filename component with no path separators."""
-    sanitized = _UNSAFE_FILENAME_CHARS_RE.sub("-", str(value or ""))
-    return " ".join(sanitized.split()).strip(" .")
-
-
-def _safe_name_en(name_en: str) -> str:
-    """Strip parentheticals and sanitize name_en for use in a filename."""
-    s = name_en or ""
-    while _TRAILING_PAREN_RE.search(s):
-        s = _TRAILING_PAREN_RE.sub("", s).strip()
-    return _safe_filename_component(s)
-
-
-def _confined_listing_path(listings_dir: Path, filename: str) -> Path:
-    """Build a direct child path and reject symlink/path traversal escapes."""
-    if Path(filename).parent != Path("."):
-        raise ValueError(f"listing filename escapes {listings_dir}: {filename!r}")
-    candidate = listings_dir / filename
-    if candidate.resolve().parent != listings_dir.resolve():
-        raise ValueError(f"listing filename escapes {listings_dir}: {filename!r}")
-    return candidate
-
-
 def _row_artifact_path(
     row_id: str,
     suffix: str,
     listings_dir: Path | None = None,
 ) -> Path:
-    """Return a confined JSON or text artifact path for one row."""
-    if suffix not in {".json", ".txt"}:
-        raise ValueError(f"unsupported row artifact suffix: {suffix!r}")
-    listings_dir = LISTINGS_DIR if listings_dir is None else listings_dir
-    return _confined_listing_path(listings_dir, f"{row_id}{suffix}")
+    """UI-compatible wrapper around the pure artifact path helper."""
+    directory = LISTINGS_DIR if listings_dir is None else listings_dir
+    return _build_row_artifact_path(row_id, suffix, directory)
 
 
-def _jpg_path_for(listing: dict, listings_dir: Path | None = None) -> Path:
-    """Build the human-readable JPEG path for a listing, with collision fallback."""
-    listings_dir = LISTINGS_DIR if listings_dir is None else listings_dir
-    row_id = _safe_filename_component(listing.get("row_id")) or "unknown"
-    name_safe = _safe_name_en(listing.get("name_en", ""))
-
-    if not name_safe:
-        return _confined_listing_path(listings_dir, f"{row_id}.jpg")
-
-    finish_zh = _safe_filename_component(
-        build_finish_zh(listing["name_en"], listing["printing"])
-    )
-    set_safe = _safe_filename_component(listing.get("set_code")) or "UNKNOWN"
-    cn_safe = _safe_filename_component(listing.get("collector_number")) or "unknown"
-    stem = (
-        f"{set_safe}-{cn_safe}"
-        f" - {name_safe}"
-        f" - {finish_zh}"
-    )
-    candidate = _confined_listing_path(listings_dir, f"{stem}.jpg")
-    copy_number = 1
-    while candidate.exists():
-        candidate = _confined_listing_path(
-            listings_dir,
-            f"{stem} (copy {copy_number}).jpg",
-        )
-        copy_number += 1
-    return candidate
+def _jpg_path_for(
+    listing: dict,
+    listings_dir: Path | None = None,
+    current_path: Path | None = None,
+) -> Path:
+    """UI-compatible wrapper around the pure JPEG naming helper."""
+    directory = LISTINGS_DIR if listings_dir is None else listings_dir
+    return _build_jpg_path(listing, directory, current_path=current_path)
 
 
 def _write_listing_artifacts(

@@ -600,6 +600,24 @@ def test_filename_collision_handling_finds_next_available_copy(tmp_path):
     assert path.name == f"{stem} (copy 2).jpg"
 
 
+def test_filename_reconciliation_allows_current_desired_path(tmp_path):
+    listing = {
+        "row_id": "276329_0",
+        "name_en": "Imperial Seal (Borderless)",
+        "printing": "Normal",
+        "set_code": "2X2",
+        "collector_number": "354",
+    }
+    current = tmp_path / "2X2-354 - Imperial Seal - 异画英文平.jpg"
+    current.touch()
+
+    assert _jpg_path_for(
+        listing,
+        listings_dir=tmp_path,
+        current_path=current,
+    ) == current
+
+
 @pytest.mark.parametrize(
     ("field", "unsafe_value"),
     [

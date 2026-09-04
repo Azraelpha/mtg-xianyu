@@ -382,18 +382,20 @@ as the implicit listing title.
 **`finish_zh` — treatment-aware finish label.** Composed by
 `build_finish_zh(name_en, printing)`, which is the shared classifier consumed by
 both `describe.py` (description line 3) and `ui.py` (JPEG filename generation).
-It strips parentheticals from `name_en` and classifies each suffix into one of
-four categories:
+It strips parentheticals from `name_en` and classifies each suffix by role:
 
 | Category | Mapped suffixes | Effect |
 |---|---|---|
-| Visual treatment | `Borderless` → 异画, `Extended Art` → 扩画, `Retro Frame` → 老框, `Showcase` → 异画 | Prepended before 英文: `异画英文闪` |
-| Finish variant | `Foil Etched` → 蚀刻闪, `Rainbow Foil` → 彩虹闪, `Surge Foil` → 潮涌闪 | Replaces the base finish suffix entirely |
+| Visual treatment | `Borderless` → 异画, `Anime Borderless` → 动漫无边框, `Extended Art` → 扩画, `Future Sight` → 未来框, `Retro Frame` → 老框, `Showcase` → 异画, `White Border` → 白边 | Prepended before the language and finish |
+| Finish variant | `Foil Etched` → 蚀刻闪, `Oil Slick Raised Foil` → 油膜浮雕闪, `Rainbow Foil` → 彩虹闪, `Surge Foil` → 潮涌闪 | Replaces the base finish suffix entirely |
+| Language variant | `JP Alternate Art` → 日文异画, `Phyrexian` → 非瑞克西亚文 | Replaces the default 英文 label |
+| Edition metadata | `Post Malone`, or `^[A-Z0-9]{2,4} Bundle$` | Silently stripped without changing finish |
 | Set code (`^[A-Z0-9]{2,4}$`) | e.g. `DVD`, `IMA`, `A25`, `2X2` | Silently stripped |
 | Collector number (`^\d+$`) | e.g. `350`, `280`, `1553` | Silently stripped |
 | Unknown | anything else | Stderr warning; base finish used |
 
-Base finish: `Foil` → 闪, `Normal` → 平. Language prefix: always 英文.
+Base finish: `Foil` → 闪, `Normal` → 平. Language defaults to 英文 unless a
+recognized language suffix overrides it.
 
 Composed examples:
 
@@ -403,6 +405,8 @@ Composed examples:
 | `"Esper Sentinel (Retro Frame)"` | Normal | `老框英文平` |
 | `"Foo (Foil Etched)"` | Foil | `英文蚀刻闪` |
 | `"Foo (Borderless) (Foil Etched)"` | Foil | `异画英文蚀刻闪` |
+| `"Negate (JP Alternate Art)"` | Foil | `日文异画闪` |
+| `"Phyrexian Arena (Phyrexian) (ONE Bundle)"` | Foil | `非瑞克西亚文闪` |
 | `"Jetmir's Garden"` | Foil | `英文闪` |
 
 If a finish variant suffix appears but `printing` is `"Normal"`, a warning is
@@ -412,6 +416,13 @@ logged to stderr and the suffix is trusted over the printing field.
 writes `{row_id}.txt` next to each, and prints a tally of unmapped suffixes at
 the end. Re-run after updating the treatment mappings to regenerate all `.txt`
 files.
+
+**Artifact reconciliation.** `mtg-reconcile` compares every approved listing's
+description and human-readable JPEG filename with current generation logic. It
+is dry-run by default; `--apply` atomically rewrites changed descriptions and
+updates `photo_jpg` after renaming each JPEG. A failed JSON update rolls the
+JPEG rename back. Existing destination names receive the normal `(copy {N})`
+collision suffix.
 
 **UI integration.** On approval, `_do_approve` in `ui.py` calls
 `build_description(listing)` and writes the `.txt` alongside the `.json` and
@@ -651,12 +662,10 @@ Jetmir's Garden
 - **FX_RATE calibration.** `FX_RATE = 7.25` is hardcoded in `ui.py`. Tune
   empirically after the first batch of sales; update and re-run `mtg-describe`
   if needed.
-- **Treatment suffix mapping is partial.** Common visual treatments and all
-  three special finishes are mapped; rarer suffixes (`Anime Borderless`, `Oil
-  Slick Raised Foil`, `Future Sight` frame, `White Border`, `JP Alternate Art`,
-  etc.) fall to the warn-and-default path. Expand `VISUAL_TREATMENTS` /
-  `FINISH_VARIANTS` in `describe.py` as needed when approving cards with
-  unmapped treatments.
+- **Treatment suffix mapping remains intentionally extensible.** Every suffix
+  currently present in the 808-card collection is classified. Future unknown
+  suffixes still warn and use the base finish until they are investigated and
+  added to the appropriate mapping.
 - **Manual listing workflow scalability.** Per-card Xianyu publish is still
   fully manual (copy description, upload photo, set price). If friction is high
   past ~50 cards, Playwright automation for v2 becomes more attractive.

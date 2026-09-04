@@ -67,6 +67,8 @@ directly from Python. See SPEC §8.
 │   ├── price.py       # stub — NOT BUILT; dual-price logic lives in ui.py instead
 │   ├── storage.py     # shared atomic UTF-8 text/JSON persistence
 │   ├── describe.py    # treatment-aware finish_zh + 4-line Xianyu description
+│   ├── artifacts.py   # pure listing filename/path generation
+│   ├── reconcile.py   # dry-run-first approved artifact migration
 │   └── ui.py          # Streamlit workflow (photo bind, dual-price selection,
 │                      #   HEIC→JPEG export, approval gates, state machine)
 ├── data/
@@ -82,6 +84,10 @@ directly from Python. See SPEC §8.
 └── tests/
     ├── test_parse.py
     ├── test_enrich.py
+    ├── test_storage.py
+    ├── test_artifacts.py
+    ├── test_reconcile.py
+    ├── test_review_fixes.py
     ├── test_ui.py
     └── test_describe.py
 ```
@@ -266,6 +272,10 @@ uv run streamlit run src/mtg_xianyu/ui.py
 # Regenerate .txt description files from all existing .json listings
 # (re-run after updating treatment mappings in describe.py)
 uv run mtg-describe
+
+# Preview/apply description and JPEG filename changes after mapping updates
+uv run mtg-reconcile
+uv run mtg-reconcile --apply
 ```
 
 ## Operations
@@ -318,9 +328,7 @@ complete normalized paths so duplicate filenames do not collide.
   selling the first batch. (`FX_RATE = 7.25` is hardcoded in `ui.py`.)
 - Whether v2 attempts Playwright-driven Xianyu publish (account risk, session
   handling complexity).
-- Treatment suffix mapping is partial — the six most common visual treatments
-  and three finish variants are mapped; rarer suffixes (`Anime Borderless`,
-  `Oil Slick Raised Foil`, `Future Sight` frame, `White Border`, `JP Alternate
-  Art`, etc.) fall to the warn-and-default path. Expand `VISUAL_TREATMENTS` /
-  `FINISH_VARIANTS` in `describe.py` as cards with unmapped treatments are
-  approved.
+- Treatment suffix mapping remains extensible. Every suffix in the current
+  808-card collection is classified, including language variants and packaging
+  metadata; future unknown suffixes still warn and use the base finish until
+  investigated.

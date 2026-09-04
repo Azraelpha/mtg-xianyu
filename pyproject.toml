@@ -21,6 +21,7 @@ dependencies = [
 mtg-parse    = "mtg_xianyu.parse:main"
 mtg-enrich   = "mtg_xianyu.enrich:main"
 mtg-describe = "mtg_xianyu.describe:main"
+mtg-reconcile = "mtg_xianyu.reconcile:main"
 
 [dependency-groups]
 dev = [

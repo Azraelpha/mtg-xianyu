@@ -5,6 +5,7 @@ from mtg_xianyu.describe import (
     _classify_and_compose_finish,
     _extract_suffixes,
     build_description,
+    build_finish_zh,
 )
 
 # ── _extract_suffixes ─────────────────────────────────────────────────────────
@@ -79,6 +80,29 @@ def test_surge_foil():
     assert result == "英文潮涌闪"
 
 
+@pytest.mark.parametrize(
+    ("name_en", "printing", "expected"),
+    [
+        ("Necropotence (Anime Borderless)", "Normal", "动漫无边框英文平"),
+        ("Urza's Saga (White Border)", "Normal", "白边英文平"),
+        ("City of Brass (Future Sight)", "Normal", "未来框英文平"),
+        (
+            "Zopandrel, Hunger Dominus (Oil Slick Raised Foil)",
+            "Foil",
+            "英文油膜浮雕闪",
+        ),
+        ("Negate (JP Alternate Art)", "Foil", "日文异画闪"),
+        (
+            "Phyrexian Arena (Phyrexian) (ONE Bundle)",
+            "Foil",
+            "非瑞克西亚文闪",
+        ),
+    ],
+)
+def test_current_collection_special_treatments(name_en, printing, expected):
+    assert build_finish_zh(name_en, printing) == expected
+
+
 def test_borderless_and_foil_etched():
     # innermost suffix is "Foil Etched", outermost is "Borderless"
     suffixes = ["Foil Etched", "Borderless"]
@@ -117,13 +141,16 @@ def test_unknown_suffix_warns_and_defaults(capsys):
     assert result == "英文闪"          # defaults to base finish with no visual prefix
 
 
-def test_double_unknown_suffixes_both_warn(capsys):
-    # "Foo (Phyrexian) (ONE Bundle)" → suffixes = ["ONE Bundle", "Phyrexian"]
-    suffixes = ["ONE Bundle", "Phyrexian"]
-    _classify_and_compose_finish(suffixes, "Foil", "Foo (Phyrexian) (ONE Bundle)")
-    err = capsys.readouterr().err
-    assert "ONE Bundle" in err
-    assert "Phyrexian" in err
+@pytest.mark.parametrize(
+    "name_en",
+    [
+        "Reflections of Littjara (KHM Bundle)",
+        "Post's Sigil - Leshrac's Sigil (Post Malone)",
+    ],
+)
+def test_edition_metadata_suffixes_are_silent(name_en, capsys):
+    assert build_finish_zh(name_en, "Foil") == "英文闪"
+    assert capsys.readouterr().err == ""
 
 
 # ── build_description ─────────────────────────────────────────────────────────
