@@ -205,21 +205,15 @@ def test_known_score_86_fuzzy_set_match_is_rejected():
         )
 
 
-def test_auto_advance_reindexes_after_current_row_leaves_filtered_view(monkeypatch):
+def test_auto_advance_reindexes_after_current_row_leaves_filtered_view():
     rows = [{"row_id": "a"}, {"row_id": "b"}, {"row_id": "c"}]
     state = {"rows": {
         "a": {"state": "approved"},
         "b": {"state": "ready_to_review"},
         "c": {"state": "ready_to_review"},
     }}
-    monkeypatch.setattr(
-        ui,
-        "st",
-        SimpleNamespace(session_state={"_applied_view": "Remaining only"}),
-    )
-
     # b is the next logical row, and after removing approved a it is index 0.
-    assert ui._next_unfinished_idx(rows, state, 0) == 0
+    assert ui._next_unfinished_idx(rows, state, 0, "Remaining only") == 0
 
 
 def test_unresolved_set_blocks_approval():

@@ -517,8 +517,9 @@ bindings.
 8. `_save_state(state)` — write a flushed sibling temporary file and atomically
    replace `state.json`. If it fails, restore the previous in-memory row state
    and remove the new listing artifacts.
-9. Auto-advance to next `ready_to_review` row; set `_all_caught_up` flag if
-    none remain.
+9. Auto-advance to the next `ready_to_review` row, wrapping once to the start
+   of the active view; set `_all_caught_up` only if none exist anywhere in that
+   view.
 
 **Approval gating.** `_approval_hints(row, row_entry)` is the **single source
 of truth** for whether a row is approvable. It collects all blocking conditions

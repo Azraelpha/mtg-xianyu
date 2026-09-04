@@ -481,15 +481,31 @@ def test_next_unfinished_row():
         "r2": {"state": "approved"},
         "r3": {"state": "ready_to_review"},
     }}
-    assert _next_unfinished_idx(rows, state, 0) == 1   # r1 is next
-    assert _next_unfinished_idx(rows, state, 1) == 3   # r3 is next after r1
-    assert _next_unfinished_idx(rows, state, 3) is None  # nothing after r3
+    assert _next_unfinished_idx(rows, state, 0, "All rows") == 1
+    assert _next_unfinished_idx(rows, state, 1, "All rows") == 3
+    assert _next_unfinished_idx(rows, state, 3, "All rows") == 1
 
 
 def test_next_unfinished_row_returns_none_when_all_approved():
     rows = [{"row_id": "r0"}, {"row_id": "r1"}]
     state = {"rows": {"r0": {"state": "approved"}, "r1": {"state": "approved"}}}
-    assert _next_unfinished_idx(rows, state, 0) is None
+    assert _next_unfinished_idx(rows, state, 0, "All rows") is None
+
+
+def test_next_unfinished_wraps_and_reindexes_filtered_view():
+    rows = [{"row_id": "r0"}, {"row_id": "r1"}, {"row_id": "r2"}]
+    state = {"rows": {
+        "r0": {"state": "ready_to_review"},
+        "r1": {"state": "waiting_photo"},
+        "r2": {"state": "approved"},
+    }}
+
+    assert _next_unfinished_idx(rows, state, 2, "Remaining only") == 0
+
+
+def test_next_unfinished_rejects_unknown_view():
+    with pytest.raises(ValueError, match="unknown review view"):
+        _next_unfinished_idx([], {"rows": {}}, 0, "mystery")
 
 
 def test_sort_rows_jhs_beats_usd_fallback():

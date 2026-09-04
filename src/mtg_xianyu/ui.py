@@ -671,23 +671,27 @@ def _build_listing(row: dict, state_row: dict, fx_rate: float, ts: str) -> dict:
 
 
 def _next_unfinished_idx(
-    display_rows: list[dict], state: dict, current_idx: int
+    display_rows: list[dict],
+    state: dict,
+    current_idx: int,
+    view: str,
 ) -> int | None:
-    """Return the next ready row's index in the currently applied view."""
+    """Return the next ready row, wrapping once through the applied view."""
+    if view not in _VIEW_FILTERS:
+        raise ValueError(f"unknown review view: {view!r}")
+
     next_row_id = None
-    for i in range(current_idx + 1, len(display_rows)):
+    search_order = (
+        *range(current_idx + 1, len(display_rows)),
+        *range(0, current_idx),
+    )
+    for i in search_order:
         if _row_state(state, display_rows[i].get("row_id", "")) == "ready_to_review":
             next_row_id = display_rows[i].get("row_id")
             break
     if next_row_id is None:
         return None
 
-    try:
-        view = st.session_state.get("_applied_view", "All rows")
-    except Exception:
-        view = "All rows"
-    if view not in _VIEW_FILTERS:
-        view = "All rows"
     rebuilt_rows = _filter_rows(display_rows, state, view)
     for i, row in enumerate(rebuilt_rows):
         if row.get("row_id") == next_row_id:
@@ -1138,7 +1142,7 @@ def _render_app() -> None:
                 key=f"approve_{row_id}",
             ):
                 _do_approve(row, row_id, state)
-                next_idx = _next_unfinished_idx(display_rows, state, idx)
+                next_idx = _next_unfinished_idx(display_rows, state, idx, view)
                 if next_idx is not None:
                     st.session_state.current_idx = next_idx
                     st.session_state.pop("_all_caught_up", None)
@@ -1165,7 +1169,7 @@ def _render_app() -> None:
                 _ensure_row(state, row_id)
                 state["rows"][row_id]["state"] = "skipped"
                 _save_state(state)
-                next_idx = _next_unfinished_idx(display_rows, state, idx)
+                next_idx = _next_unfinished_idx(display_rows, state, idx, view)
                 if next_idx is not None:
                     st.session_state.current_idx = next_idx
                     st.session_state.pop("_all_caught_up", None)
@@ -1186,7 +1190,7 @@ def _render_app() -> None:
             st.session_state.pop("_all_caught_up", None)
             st.rerun()
 
-        # "All caught up" only when auto-advance found no next ready_to_review row
+        # "All caught up" only when no ready row exists anywhere in this view
         if st.session_state.get("_all_caught_up"):
             st.caption("All caught up for now — no more rows ready to review.")
 
