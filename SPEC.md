@@ -421,10 +421,12 @@ Composed examples:
 If a finish variant suffix appears but `printing` is `"Normal"`, a warning is
 logged to stderr and the suffix is trusted over the printing field.
 
-**CLI.** `mtg-describe` (registered console script) reads all `data/listings/*.json`,
-writes `{row_id}.txt` next to each, and prints a tally of unmapped suffixes at
-the end. Re-run after updating the treatment mappings to regenerate all `.txt`
-files.
+**CLI.** `mtg-describe` (registered console script) preflights all approved
+artifacts, updates changed `{row_id}.txt` files, and prints a tally of unmapped
+suffixes. If current generation logic also changes a human-readable JPEG name,
+it exits before writing anything and directs the operator to `mtg-reconcile` so
+the description, JPEG, and `photo_jpg` metadata remain synchronized. Use it
+directly for description-only template changes.
 
 **Artifact reconciliation.** `mtg-reconcile` compares every approved listing's
 description and human-readable JPEG filename with current generation logic. It
@@ -684,8 +686,8 @@ Jetmir's Garden
 **Still open:**
 
 - **FX_RATE calibration.** `FX_RATE = 7.25` is hardcoded in `ui.py`. Tune
-  empirically after the first batch of sales; update and re-run `mtg-describe`
-  if needed.
+  empirically after the first batch of sales; the new rate affects subsequent
+  source-based approvals but does not rewrite prices in approved listings.
 - **Treatment suffix mapping remains intentionally extensible.** Every suffix
   currently present in the 808-card collection is classified. Future unknown
   suffixes still warn and use the base finish until they are investigated and

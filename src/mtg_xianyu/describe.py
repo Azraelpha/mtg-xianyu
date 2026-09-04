@@ -6,7 +6,8 @@ Template-driven, no LLM calls. Treatment classification covers:
   - LANGUAGE_VARIANTS replace the default English label
   - edition-only suffixes are stripped without changing the finish
 
-CLI: reads data/listings/*.json, writes {row_id}.txt, prints unknown-suffix tally.
+CLI: validates approved artifacts, updates changed {row_id}.txt files, and prints
+an unknown-suffix tally. JPEG filename drift must be handled by mtg-reconcile.
 """
 
 import json
@@ -14,8 +15,6 @@ import re
 import sys
 from collections import defaultdict
 from pathlib import Path
-
-from mtg_xianyu.storage import atomic_write_text
 
 SHOP_POLICY = "主页满300包邮"
 
@@ -134,6 +133,10 @@ def build_description(listing: dict) -> str:
 
 
 def main() -> None:
+    # Imported here to avoid a module-level cycle: reconcile uses
+    # build_description as the shared description generator.
+    from mtg_xianyu.reconcile import apply_listing_update, plan_listing_updates
+
     listings_dir = Path("data/listings")
     listing_files = sorted(
         p for p in listings_dir.glob("*.json") if p.name != "state.json"
@@ -143,21 +146,37 @@ def main() -> None:
         print("No listing JSON files found in data/listings/.", file=sys.stderr)
         return
 
-    unknown_tally: dict[str, list[str]] = defaultdict(list)
-    written = 0
+    # Plan the entire batch before writing anything. Besides validating every
+    # listing, this keeps description text and treatment-bearing JPEG names
+    # from silently drifting apart after generation logic changes.
+    updates = plan_listing_updates(listings_dir)
+    rename_updates = [update for update in updates if update.rename_jpg]
+    if rename_updates:
+        print(
+            "Refusing to update descriptions: "
+            f"{len(rename_updates)} listing(s) also require JPEG renames.",
+            file=sys.stderr,
+        )
+        print(
+            "Run 'mtg-reconcile' to preview the changes, then "
+            "'mtg-reconcile --apply' to apply them together.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
 
+    text_updates = [update for update in updates if update.write_text]
+    for update in text_updates:
+        apply_listing_update(update)
+
+    unknown_tally: dict[str, list[str]] = defaultdict(list)
     for path in listing_files:
         listing = json.loads(path.read_text(encoding="utf-8"))
-        desc = build_description(listing)
-        atomic_write_text(path.with_suffix(".txt"), desc)
-        written += 1
-
         _, suffixes = _extract_suffixes(listing["name_en"])
         for s in suffixes:
             if not _is_known_suffix(s):
                 unknown_tally[s].append(listing["name_en"])
 
-    print(f"Wrote {written} description(s).")
+    print(f"Wrote {len(text_updates)} changed description(s).")
     if unknown_tally:
         print("\nUnknown suffixes (need mapping or investigation):")
         for suffix, cards in sorted(unknown_tally.items()):

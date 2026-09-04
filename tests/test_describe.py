@@ -1,5 +1,9 @@
+import json
+from pathlib import Path
+
 import pytest
 
+from mtg_xianyu import describe
 from mtg_xianyu.describe import (
     SHOP_POLICY,
     _classify_and_compose_finish,
@@ -193,3 +197,73 @@ def test_full_description_jetmir():
         "主页满300包邮"
     )
     assert build_description(listing) == expected
+
+
+# ── CLI ──────────────────────────────────────────────────────────────────────────
+
+def _write_approved_listing(
+    listings_dir: Path,
+    *,
+    row_id: str = "1_0",
+    name_en: str = "Test Card (Borderless)",
+    jpg_finish: str = "异画英文平",
+) -> tuple[Path, Path, Path]:
+    listings_dir.mkdir(parents=True, exist_ok=True)
+    jpg_path = listings_dir / f"TST-1 - Test Card - {jpg_finish}.jpg"
+    jpg_path.write_bytes(b"jpeg")
+    listing = {
+        "row_id": row_id,
+        "name_en": name_en,
+        "name_zh": "测试牌",
+        "printing": "Normal",
+        "set_name_zh": "测试系列",
+        "set_code": "TST",
+        "collector_number": "1",
+        "photo_jpg": str(jpg_path),
+    }
+    json_path = listings_dir / f"{row_id}.json"
+    json_path.write_text(json.dumps(listing), encoding="utf-8")
+    txt_path = listings_dir / f"{row_id}.txt"
+    txt_path.write_text("stale", encoding="utf-8")
+    return json_path, jpg_path, txt_path
+
+
+def test_main_refuses_treatment_drift_without_mutating(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    json_path, old_jpg, txt_path = _write_approved_listing(
+        Path("data/listings"), jpg_finish="英文平"
+    )
+    original_json = json_path.read_text(encoding="utf-8")
+
+    with pytest.raises(SystemExit) as exc_info:
+        describe.main()
+
+    assert exc_info.value.code == 1
+    assert "mtg-reconcile --apply" in capsys.readouterr().err
+    assert json_path.read_text(encoding="utf-8") == original_json
+    assert txt_path.read_text(encoding="utf-8") == "stale"
+    assert old_jpg.is_file()
+    assert not old_jpg.with_name("TST-1 - Test Card - 异画英文平.jpg").exists()
+
+
+def test_main_updates_text_when_jpeg_name_is_current(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    _, jpg_path, txt_path = _write_approved_listing(Path("data/listings"))
+
+    describe.main()
+
+    assert "异画英文平" in txt_path.read_text(encoding="utf-8")
+    assert jpg_path.is_file()
+    assert "Wrote 1 changed description(s)." in capsys.readouterr().out
+
+
+def test_main_preflights_all_listings_before_writing(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _, _, txt_path = _write_approved_listing(Path("data/listings"))
+    malformed_path = Path("data/listings/9_0.json")
+    malformed_path.write_text("{not valid json", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="cannot load approved listing"):
+        describe.main()
+
+    assert txt_path.read_text(encoding="utf-8") == "stale"

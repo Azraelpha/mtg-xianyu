@@ -119,8 +119,9 @@ decision (Option 3). This is not a TODO — it's an architectural choice. The
 manual binding produces better results for a ~800-card one-time job than an
 automated matcher that would need manual review anyway.
 
-`mtg-describe` can also be run standalone as a CLI to regenerate all `.txt` files
-from existing `.json` listings (e.g., after updating the treatment mappings).
+`mtg-describe` can also be run standalone for description-only template changes.
+It preflights all approved artifacts and refuses to write if generation logic
+also requires JPEG renames; use `mtg-reconcile` for treatment mapping changes.
 
 ## Always
 
@@ -272,8 +273,8 @@ uv run mtg-enrich  data/rows.json           # → data/enriched.json
 # Review UI — main workflow
 uv run streamlit run src/mtg_xianyu/ui.py
 
-# Regenerate .txt description files from all existing .json listings
-# (re-run after updating treatment mappings in describe.py)
+# Regenerate changed .txt files after description-only template changes
+# (refuses to write when JPEG names also need reconciliation)
 uv run mtg-describe
 
 # Preview/apply description and JPEG filename changes after mapping updates
