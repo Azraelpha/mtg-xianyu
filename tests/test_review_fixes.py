@@ -359,25 +359,51 @@ def test_approval_installs_complete_artifact_set_and_persists_state(
     } == {".state.json.lock"}
 
 
-def test_approval_artifact_install_rolls_back_partial_replace(tmp_path, monkeypatch):
+def test_approval_artifact_install_rolls_back_partial_link(tmp_path, monkeypatch):
     row, state = _approval_fixture(tmp_path)
     listings = tmp_path / "listings"
     listings.mkdir()
     monkeypatch.setattr(ui, "LISTINGS_DIR", listings)
     monkeypatch.setattr(ui, "STATE_PATH", listings / "state.json")
-    real_replace = ui.os.replace
+    real_link = ui.os.link
 
-    def fail_json_replace(source, destination):
+    def fail_json_link(source, destination):
         if str(destination).endswith("1_0.json"):
-            raise OSError("simulated artifact replace failure")
-        real_replace(source, destination)
+            raise OSError("simulated artifact link failure")
+        real_link(source, destination)
 
-    monkeypatch.setattr(ui.os, "replace", fail_json_replace)
-    with pytest.raises(OSError, match="artifact replace"):
+    monkeypatch.setattr(ui.os, "link", fail_json_link)
+    with pytest.raises(OSError, match="artifact link"):
         ui._do_approve(row, "1_0", state)
 
     assert state["rows"]["1_0"]["state"] == "ready_to_review"
     assert list(listings.iterdir()) == []
+
+
+def test_approval_preserves_artifact_created_during_install(tmp_path, monkeypatch):
+    row, state = _approval_fixture(tmp_path)
+    listings = tmp_path / "listings"
+    listings.mkdir()
+    monkeypatch.setattr(ui, "LISTINGS_DIR", listings)
+    monkeypatch.setattr(ui, "STATE_PATH", listings / "state.json")
+    real_link = ui.os.link
+    competing_path = None
+
+    def race_first_link(source, destination):
+        nonlocal competing_path
+        if competing_path is None:
+            competing_path = Path(destination)
+            competing_path.write_bytes(b"concurrent winner")
+        real_link(source, destination)
+
+    monkeypatch.setattr(ui.os, "link", race_first_link)
+    with pytest.raises(FileExistsError, match="another session"):
+        ui._do_approve(row, "1_0", state)
+
+    assert state["rows"]["1_0"]["state"] == "ready_to_review"
+    assert competing_path is not None
+    assert competing_path.read_bytes() == b"concurrent winner"
+    assert set(listings.iterdir()) == {competing_path}
 
 
 def test_approval_rolls_back_artifacts_when_state_save_fails(tmp_path, monkeypatch):

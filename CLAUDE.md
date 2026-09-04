@@ -259,8 +259,10 @@ also requires JPEG renames; use `mtg-reconcile` for treatment mapping changes.
   Every JPEG, JSON, and text artifact path is confined to `data/listings/`, and
   enriched `row_id` values must match their generated
   `{product_id}_{copy_number}` identity. JPEG collisions use the first available
-  `(copy {N})` suffix. Listings approved before this naming change keep their
-  old `{row_id}.jpg` names on disk.
+  `(copy {N})` suffix. Approval installs prepared artifacts with atomic
+  no-overwrite operations so concurrent sessions cannot replace each other's
+  files. Listings approved before this naming change keep their old
+  `{row_id}.jpg` names on disk.
 
 ## Commands
 

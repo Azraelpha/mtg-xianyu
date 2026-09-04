@@ -530,9 +530,10 @@ intentionally favors a visible retry over silent lost updates.
    the JPEG, `{row_id}.json`, and `{row_id}.txt` paths directly inside
    `data/listings/`, then prepare them as flushed temporary sibling files
    without changing the visible listing set.
-6. Atomically install all three prepared artifacts with `os.replace`. If any
-   install fails, remove every artifact installed by this attempt and leave the
-   row ready for review.
+6. Atomically install each prepared artifact with a no-overwrite hard link. If
+   another session creates a destination after the existence check, preserve
+   its file and fail the approval. If any install fails, remove only the
+   artifacts installed by this attempt and leave the row ready for review.
 7. Update `state["rows"][row_id]` in-memory: `state="approved"`, `approved_at=ts`, `price_cny`, `price_source`.
 8. `_save_state(state)` — write a flushed sibling temporary file and atomically
    replace `state.json` only if its locked revision still matches the session.

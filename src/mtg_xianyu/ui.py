@@ -892,7 +892,7 @@ def _write_listing_artifacts(
     json_path: Path,
     txt_path: Path,
 ) -> list[Path]:
-    """Prepare every artifact first, then atomically install the complete set."""
+    """Prepare every artifact, then install each without overwriting a winner."""
     final_paths = [jpg_path, json_path, txt_path]
     existing = [path for path in final_paths if path.exists()]
     if existing:
@@ -928,7 +928,17 @@ def _write_listing_artifacts(
         temp_paths.append(txt_tmp)
 
         for temp_path, final_path in zip(temp_paths, final_paths, strict=True):
-            os.replace(temp_path, final_path)
+            try:
+                # The prepared file is a sibling, so creating a hard link is
+                # atomic and fails if another session created final_path after
+                # the up-front existence check. The temporary name is removed
+                # in finally once every artifact has been installed.
+                os.link(temp_path, final_path)
+            except FileExistsError as exc:
+                raise FileExistsError(
+                    "Refusing to overwrite listing artifact created by "
+                    f"another session: {final_path.name}"
+                ) from exc
             installed.append(final_path)
         return installed
     except Exception:
