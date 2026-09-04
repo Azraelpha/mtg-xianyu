@@ -461,11 +461,14 @@ approved_at}`
 
 On load, the UI validates `enriched.json` structure and unique `row_id` values,
 then validates `state.json` types, states, price sources, and cross-field price
-consistency. Missing fields introduced by newer UI versions are backfilled and
-saved atomically. Invalid files are left untouched and surfaced as actionable
-errors in the page instead of being silently reset. State rows from an older
-dataset are preserved but excluded from current progress counts and photo-pool
-bindings.
+consistency. Photo paths are compared by their resolved identity: two active
+rows cannot bind the same physical photo through different relative, absolute,
+or symlinked path spellings, and an equivalent bound path never reappears in
+the unbound pool. Missing fields introduced by newer UI versions are
+backfilled and saved atomically. Invalid files are left untouched and surfaced
+as actionable errors in the page instead of being silently reset. State rows
+from an older dataset are preserved but excluded from current progress counts,
+photo-uniqueness checks, and photo-pool bindings.
 
 **Layout:**
 

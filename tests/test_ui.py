@@ -145,6 +145,47 @@ def test_load_state_reports_invalid_json_without_overwriting(tmp_path, monkeypat
     assert path.read_text(encoding="utf-8") == "not json"
 
 
+def test_load_state_rejects_duplicate_active_photo_aliases_without_overwriting(
+    tmp_path, monkeypatch
+):
+    photo = tmp_path / "card.heic"
+    alias = photo.parent / ".." / photo.parent.name / photo.name
+    path = tmp_path / "state.json"
+    original = json.dumps({
+        "fx_rate": FX_RATE,
+        "rows": {
+            "first_0": {"state": "ready_to_review", "photo_path": str(photo)},
+            "second_0": {"state": "ready_to_review", "photo_path": str(alias)},
+        },
+    })
+    path.write_text(original, encoding="utf-8")
+    monkeypatch.setattr(ui, "STATE_PATH", path)
+
+    with pytest.raises(ValueError, match="rows 'first_0' and 'second_0'.*same photo"):
+        ui._load_state({"first_0", "second_0"})
+
+    assert path.read_text(encoding="utf-8") == original
+
+
+def test_load_state_ignores_duplicate_binding_on_stale_row(tmp_path, monkeypatch):
+    photo = tmp_path / "card.heic"
+    alias = photo.parent / ".." / photo.parent.name / photo.name
+    path = tmp_path / "state.json"
+    path.write_text(json.dumps({
+        "fx_rate": FX_RATE,
+        "rows": {
+            "current_0": {"state": "ready_to_review", "photo_path": str(photo)},
+            "stale_0": {"state": "ready_to_review", "photo_path": str(alias)},
+        },
+    }), encoding="utf-8")
+    monkeypatch.setattr(ui, "STATE_PATH", path)
+
+    state = ui._load_state({"current_0"})
+
+    assert state["rows"]["current_0"]["photo_path"] == str(photo)
+    assert state["rows"]["stale_0"]["photo_path"] == str(alias)
+
+
 def test_progress_counts_ignore_stale_state_rows():
     rows = [_enriched_row(row_id="current_0"), _enriched_row(row_id="current_1")]
     state = {"rows": {
@@ -166,6 +207,34 @@ def test_unbound_pool_ignores_stale_state_bindings(tmp_path, monkeypatch):
     }}
 
     assert _build_unbound_pool(state, {"current_0"}) == [stale_photo]
+
+
+def test_unbound_pool_recognizes_equivalent_photo_path_spellings(
+    tmp_path, monkeypatch
+):
+    photo = tmp_path / "card.heic"
+    alias = photo.parent / ".." / photo.parent.name / photo.name
+    monkeypatch.setattr(ui, "_scan_photos", lambda: [photo])
+    state = {"rows": {"current_0": {"photo_path": str(alias)}}}
+
+    assert _build_unbound_pool(state, {"current_0"}) == []
+
+
+def test_bind_photo_rejects_photo_owned_by_another_active_row(tmp_path):
+    photo = tmp_path / "card.heic"
+    alias = photo.parent / ".." / photo.parent.name / photo.name
+    state = {"rows": {
+        "first_0": {"state": "waiting_photo", "photo_path": None},
+        "second_0": {"state": "ready_to_review", "photo_path": str(photo)},
+    }}
+    original = deepcopy(state)
+
+    with pytest.raises(ValueError, match="already bound.*second_0"):
+        ui._bind_photo(
+            "first_0", alias, state, {"first_0", "second_0"}
+        )
+
+    assert state == original
 
 
 # ── photo-pool identity ───────────────────────────────────────────────────────
@@ -193,7 +262,9 @@ def test_duplicate_photo_basenames_show_relative_paths(tmp_path, monkeypatch):
     "mutation",
     [
         lambda state: ui._set_row_state(state, "12345_0", price_cny=99.0),
-        lambda state: ui._bind_photo("12345_0", Path("replacement.heic"), state),
+        lambda state: ui._bind_photo(
+            "12345_0", Path("replacement.heic"), state, {"12345_0"}
+        ),
         lambda state: ui._unbind_photo("12345_0", state),
         lambda state: ui._do_approve({}, "12345_0", state),
     ],

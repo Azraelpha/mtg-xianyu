@@ -126,6 +126,52 @@ def _is_finite_nonnegative_number(value: object) -> bool:
     )
 
 
+def _photo_identity(photo_path: str | Path) -> Path:
+    """Return a canonical identity for one photo path spelling."""
+    return Path(photo_path).resolve()
+
+
+def _photo_binding_owner(
+    state: dict,
+    photo_path: str | Path,
+    active_row_ids: set[str] | None = None,
+    *,
+    excluding_row_id: str | None = None,
+) -> str | None:
+    """Return the active row already bound to photo_path, if any."""
+    identity = _photo_identity(photo_path)
+    for row_id, entry in state.get("rows", {}).items():
+        if row_id == excluding_row_id:
+            continue
+        if active_row_ids is not None and row_id not in active_row_ids:
+            continue
+        bound_path = entry.get("photo_path")
+        if bound_path and _photo_identity(bound_path) == identity:
+            return row_id
+    return None
+
+
+def _validate_photo_bindings(
+    state: dict, path: Path, active_row_ids: set[str] | None = None
+) -> None:
+    """Reject duplicate photo bindings among rows in the active dataset."""
+    owners: dict[Path, str] = {}
+    for row_id, entry in state.get("rows", {}).items():
+        if active_row_ids is not None and row_id not in active_row_ids:
+            continue
+        bound_path = entry.get("photo_path")
+        if not bound_path:
+            continue
+        identity = _photo_identity(bound_path)
+        other_row_id = owners.get(identity)
+        if other_row_id is not None:
+            raise ValueError(
+                f"invalid UI state {path}: rows {other_row_id!r} and "
+                f"{row_id!r} bind the same photo {bound_path!r}"
+            )
+        owners[identity] = row_id
+
+
 def _validate_and_migrate_state(state: object, path: Path) -> tuple[dict, bool]:
     """Validate state.json and backfill fields added by newer UI versions."""
     if not isinstance(state, dict):
@@ -220,7 +266,7 @@ def _validate_and_migrate_state(state: object, path: Path) -> tuple[dict, bool]:
     return state, changed
 
 
-def _load_state() -> dict:
+def _load_state(active_row_ids: set[str] | None = None) -> dict:
     """Read, validate, and safely migrate state.json."""
     if not STATE_PATH.exists():
         return {"fx_rate": FX_RATE, "rows": {}}
@@ -229,6 +275,7 @@ def _load_state() -> dict:
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError(f"cannot load UI state {STATE_PATH}: {exc}") from exc
     state, changed = _validate_and_migrate_state(raw_state, STATE_PATH)
+    _validate_photo_bindings(state, STATE_PATH, active_row_ids)
     if changed:
         _save_state(state)
     return state
@@ -323,12 +370,12 @@ def _build_unbound_pool(
 ) -> list[Path]:
     """Return photos not bound to a current-dataset row."""
     bound = {
-        Path(r["photo_path"])
+        _photo_identity(r["photo_path"])
         for row_id, r in state.get("rows", {}).items()
         if r.get("photo_path")
         and (active_row_ids is None or row_id in active_row_ids)
     }
-    return [p for p in _scan_photos() if p not in bound]
+    return [p for p in _scan_photos() if _photo_identity(p) not in bound]
 
 
 def _refresh_pool(state: dict, active_row_ids: set[str]) -> None:
@@ -339,9 +386,21 @@ def _refresh_pool(state: dict, active_row_ids: set[str]) -> None:
 
 # ── photo bind / unbind ───────────────────────────────────────────────────────
 
-def _bind_photo(row_id: str, photo_path: Path, state: dict) -> None:
+def _bind_photo(
+    row_id: str, photo_path: Path, state: dict, active_row_ids: set[str]
+) -> None:
     """Bind photo_path to row_id; return any previously-bound photo to the pool."""
     _require_row_mutable(state, row_id)
+    owner = _photo_binding_owner(
+        state,
+        photo_path,
+        active_row_ids,
+        excluding_row_id=row_id,
+    )
+    if owner is not None:
+        raise ValueError(
+            f"photo {photo_path} is already bound to active row {owner!r}"
+        )
     row_entry = state.get("rows", {}).get(row_id, {})
     old_photo_str = row_entry.get("photo_path")
 
@@ -352,10 +411,19 @@ def _bind_photo(row_id: str, photo_path: Path, state: dict) -> None:
     _save_state(state)
 
     # Update pool: remove new, add back old (if different from new)
-    pool = [p for p in st.session_state.unbound_pool if p != photo_path]
+    new_identity = _photo_identity(photo_path)
+    pool = [
+        path
+        for path in st.session_state.unbound_pool
+        if _photo_identity(path) != new_identity
+    ]
     if old_photo_str:
         old_path = Path(old_photo_str)
-        if old_path != photo_path and old_path not in pool:
+        pool_identities = {_photo_identity(path) for path in pool}
+        if (
+            _photo_identity(old_path) != new_identity
+            and _photo_identity(old_path) not in pool_identities
+        ):
             pool.append(old_path)
             pool = sorted(pool, key=lambda p: p.name)
     st.session_state.unbound_pool = pool
@@ -379,7 +447,8 @@ def _unbind_photo(row_id: str, state: dict) -> None:
     if old_photo_str:
         old_path = Path(old_photo_str)
         pool = st.session_state.unbound_pool
-        if old_path not in pool:
+        pool_identities = {_photo_identity(path) for path in pool}
+        if _photo_identity(old_path) not in pool_identities:
             pool = sorted(pool + [old_path], key=lambda p: p.name)
             st.session_state.unbound_pool = pool
 
@@ -866,7 +935,7 @@ def _render_app() -> None:
     # ── init state (once per session; re-init on page refresh) ───────────────
     if "state" not in st.session_state:
         try:
-            state = _load_state()
+            state = _load_state(active_row_ids)
         except ValueError as exc:
             st.error(f"Cannot load review state: {exc}")
             st.caption(
@@ -1239,7 +1308,7 @@ def _render_app() -> None:
                 if st.button("Bind ✓", key=_photo_widget_key(photo_path),
                              disabled=row_is_approved,
                              use_container_width=True):
-                    _bind_photo(row_id, photo_path, state)
+                    _bind_photo(row_id, photo_path, state, active_row_ids)
 
         # Pagination — four equal-width buttons in one row
         at_first = page == 0
