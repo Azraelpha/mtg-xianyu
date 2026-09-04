@@ -311,7 +311,9 @@ If photos are added, moved, or deleted between UI sessions, click
 **↻ Refresh** in the sidebar photo pool section to rescan. The pool is
 built once per session on startup; it does not auto-refresh. Nested photo
 folders are supported; the UI shows relative paths and keys thumbnails by their
-complete normalized paths so duplicate filenames do not collide.
+complete normalized paths so duplicate filenames do not collide. Image cache
+keys also include file modification metadata, so replacing a photo under the
+same pathname refreshes its thumbnail, full preview, and readability result.
 
 ### Xianyu listing workflow (per card)
 

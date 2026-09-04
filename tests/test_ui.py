@@ -1,9 +1,12 @@
+import io
 import json
+import os
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from PIL import Image
 
 from mtg_xianyu import ui
 from mtg_xianyu.ui import (
@@ -43,6 +46,54 @@ def _enriched_row(**overrides):
         "tcg_photo_url": "https://example.test/tcg.jpg",
     }
     return {**row, **overrides}
+
+
+@pytest.mark.parametrize(
+    "loader",
+    [ui._load_thumbnail, ui._load_display_image],
+)
+def test_cached_image_loaders_refresh_same_path_replacements(loader, tmp_path):
+    path = tmp_path / "card.png"
+    Image.new("RGB", (20, 20), "red").save(path)
+    loader.clear()
+    first_token = ui._photo_cache_token(path)
+    first = loader(str(path), first_token)
+
+    Image.new("RGB", (20, 20), "blue").save(path)
+    current_stat = path.stat()
+    os.utime(
+        path,
+        ns=(current_stat.st_atime_ns, first_token[0] + 1_000_000_000),
+    )
+    second_token = ui._photo_cache_token(path)
+    second = loader(str(path), second_token)
+
+    assert second_token != first_token
+    assert second != first
+    with Image.open(io.BytesIO(second)) as preview:
+        red, _, blue = preview.convert("RGB").getpixel((10, 10))
+    assert blue > red
+    loader.clear()
+
+
+def test_cached_readability_refreshes_same_path_replacement(tmp_path):
+    path = tmp_path / "card.png"
+    Image.new("RGB", (20, 20), "red").save(path)
+    ui._photo_can_open.clear()
+    first_token = ui._photo_cache_token(path)
+    assert ui._photo_can_open(str(path), first_token) is True
+
+    path.write_bytes(b"not an image")
+    current_stat = path.stat()
+    os.utime(
+        path,
+        ns=(current_stat.st_atime_ns, first_token[0] + 1_000_000_000),
+    )
+    second_token = ui._photo_cache_token(path)
+
+    assert second_token != first_token
+    assert ui._photo_can_open(str(path), second_token) is False
+    ui._photo_can_open.clear()
 
 
 # ── persisted UI-data boundaries ──────────────────────────────────────────────

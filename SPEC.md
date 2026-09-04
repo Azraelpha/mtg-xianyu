@@ -107,10 +107,11 @@ it will be the norm.
 All stage outputs, sbwsz cache entries, regenerated descriptions, and UI state
 files are written through the shared atomic storage helpers: prepare a flushed
 temporary sibling, then replace the destination with `os.replace`. A failed
-write preserves the previous complete file and removes its temporary file. UI
-state writes additionally hold an inter-process lock and compare a monotonic
-revision before replacement, preventing stale Streamlit sessions from
-overwriting newer state.
+write preserves the previous complete file and removes its temporary file.
+Newly approved listing artifacts instead use atomic no-overwrite installation
+so concurrent sessions cannot replace each other's files. UI state writes also
+hold an inter-process lock and compare a monotonic revision before replacement,
+preventing stale Streamlit sessions from overwriting newer state.
 
 ### 4.1 Parse — `parse.py`
 
@@ -496,7 +497,9 @@ intentionally favors a visible retry over silent lost updates.
   page, << First / < Prev / Next > / Last >> buttons) for clicking to bind.
   Thumbnail widget identity uses the complete normalized path, and captions use
   the path relative to `data/mtg_photos`, so equal filenames in different
-  subdirectories remain distinct.
+  subdirectories remain distinct. Cached thumbnails, previews, and readability
+  checks include file metadata in their keys, so replacing a photo under the
+  same pathname cannot leave the UI showing the previous image.
 - **Right column**:
   - Card name as `h3`, editable Chinese name field (persisted to
     `state.json`, overrides sbwsz `name_zh`).

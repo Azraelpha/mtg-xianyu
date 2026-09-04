@@ -543,8 +543,15 @@ def _unbind_photo(row_id: str, state: dict) -> None:
 
 # ── image loading (cached to avoid reloading on every rerun) ──────────────────
 
+def _photo_cache_token(path: Path) -> tuple[int, int, int]:
+    """Return file metadata that changes when a photo is replaced in place."""
+    stat = path.stat()
+    return stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size
+
+
 @st.cache_data
-def _load_thumbnail(path_str: str) -> bytes:
+def _load_thumbnail(path_str: str, cache_token: tuple[int, int, int]) -> bytes:
+    del cache_token  # part of the Streamlit cache key
     img = Image.open(path_str)
     img.thumbnail((150, 300))
     img = img.convert("RGB")
@@ -554,7 +561,8 @@ def _load_thumbnail(path_str: str) -> bytes:
 
 
 @st.cache_data
-def _load_display_image(path_str: str) -> bytes:
+def _load_display_image(path_str: str, cache_token: tuple[int, int, int]) -> bytes:
+    del cache_token  # part of the Streamlit cache key
     img = Image.open(path_str)
     img.thumbnail((800, 1200))
     img = img.convert("RGB")
@@ -564,9 +572,9 @@ def _load_display_image(path_str: str) -> bytes:
 
 
 @st.cache_data
-def _photo_can_open(path_str: str, mtime_ns: int) -> bool:
+def _photo_can_open(path_str: str, cache_token: tuple[int, int, int]) -> bool:
     """Return whether Pillow can decode the current version of a photo."""
-    del mtime_ns  # included in the cache key so replacing a file invalidates it
+    del cache_token  # part of the Streamlit cache key
     try:
         with Image.open(path_str) as img:
             img.verify()
@@ -747,7 +755,7 @@ def _approval_hints(row: dict, row_entry: dict) -> list[tuple[str, str]]:
         path = Path(photo_path) if photo_path else None
         if path is None or not path.is_file():
             hints.append(("⚠ Bind an existing photo before approving", "warning"))
-        elif not _photo_can_open(str(path), path.stat().st_mtime_ns):
+        elif not _photo_can_open(str(path), _photo_cache_token(path)):
             hints.append(("⚠ Bound photo is unreadable; bind another photo", "warning"))
 
     if "set_code" in row and not row.get("set_code"):
@@ -1200,7 +1208,12 @@ def _render_app() -> None:
         # ── bound photo or placeholder ────────────────────────────────────────
         if bound_photo and Path(bound_photo).exists():
             try:
-                st.image(_load_display_image(bound_photo), width=400)
+                st.image(
+                    _load_display_image(
+                        bound_photo, _photo_cache_token(Path(bound_photo))
+                    ),
+                    width=400,
+                )
             except Exception as exc:
                 st.warning(f"Cannot open {Path(bound_photo).name}: {exc}")
             if not row_is_approved and st.button(
@@ -1416,7 +1429,12 @@ def _render_app() -> None:
         for i, photo_path in enumerate(visible):
             with cols[i % THUMBNAIL_COLS]:
                 try:
-                    st.image(_load_thumbnail(str(photo_path)), width=150)
+                    st.image(
+                        _load_thumbnail(
+                            str(photo_path), _photo_cache_token(photo_path)
+                        ),
+                        width=150,
+                    )
                 except Exception:
                     st.markdown("⚠️ unreadable")
                 st.caption(_photo_display_label(photo_path))
